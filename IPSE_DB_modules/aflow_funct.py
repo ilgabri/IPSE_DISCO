@@ -43,7 +43,9 @@ def aflow_species_string(A,B,C):#A,B,C: list of species to be made in string for
             else:
                 types+=el+":"
         types=types[:-1]+"),("
-    if C[0]!="any":
+    if C[0]=="any":
+        types=types[:-2]+")"
+    else:
         for el in C:
             if isinstance(el,list): 
                 types+=(atoms_or(el))+","
@@ -62,19 +64,29 @@ def aflow_summ(sum_string,kws,npag=None,pagsiz=None):
 #mb=datasource+(aflow_species_string(Acat,Bcat,an))+",nspecies("+str(nspec)+"),"+"aurl,composition,species,stoichiometry"
     for kw in kws:
         sum_string+=","+kw
-    SERVER="http://aflow.org" ; API="/API/aflux/v1.0/?" #AFLOW's address (server+api) for json.loads command
+    #SERVER="http://aflow.org" ; API="/API/aflux/v1.0/?" #AFLOW's address (server+api) for json.loads command
+    SERVER="http://aflow.org" ; API="/API/aflux/?" #api changed, /v1.0 wan't working anymore
     if npag==None and pagsiz==None: 
         DIRECTIVES="$paging(0)"
     else:
         DIRECTIVES="$paging("+str(npag)+","+str(pagsiz)+")"
     SUMMONS=sum_string+","+DIRECTIVES
+    #print(SUMMONS) #GS tmp
     resp=json.loads(urlopen(SERVER+API+SUMMONS).read().decode("utf-8"))
     return resp
 
 
-def aflow2compound(dat,dow,n,Bcat_all=None,perocheck=False,wgap=False):
-    #funcion that takes an entry in aflow response and creates a "Compound" object ("class Compound").dow=whether to download the CONTCAR, n=bookkeeper fundamental to paralleliza,
-    #perocheck=whether to check if the stucture is a perovskite
+def aflow2compound(dat,fetch_structure,keep_structure,n,Bcat_all=None,perocheck=False,wgap=False):
+    """funcion that takes an entry in aflow response and creates a "Compound" object ("class Compound").
+    Attributes:
+    dat (object, dict-like): compound given by aflow 
+    fetch_structure (bool): whether to download the CONTCAR
+    keep_structure (bool): whether the structure is saved on a file or deleted after being read
+    n (int): bookkeeper fundamental to parallelize
+    Bcat_all (list of strings?): elements to be considered as B cation to determine whether the structure is perovskite
+    perocheck (bool): whether to check if the stucture is a perovskite
+    wgap(bool): whether information on the band gap are retrieved from 'dat' and stored
+    """
     this_comp=Compound(dat["compound"])
     aurl_corr=dat["aurl"].replace(":AFLOWDATA","/AFLOWDATA") #urlopen gives error when using ':', needs to be substituted by slash
     #this_comp.ID=aurl_corr
@@ -92,19 +104,20 @@ def aflow2compound(dat,dow,n,Bcat_all=None,perocheck=False,wgap=False):
        this_comp.gap_value=dat["Egap"] 
 
 
-    if dow or perocheck:
+    if fetch_structure or perocheck:
         myid="https://"+aurl_corr+"/"+"CONTCAR.relax"
-        contcar_name_tmp=path+"/CONTCAR_aflow"+"_"+str(n)
+        contcar_name_orig=path+"/CONTCAR_aflow"+"_"+str(n)
+        contcar_name=dat["compound"]+"_aflow"+aurl_corr[-5:].replace("/","-")+"-"+str(n)+".vasp"
         try:
-            urlretrieve(myid,filename=contcar_name_tmp)
+            urlretrieve(myid,filename=contcar_name_orig)
         except:
-            print("structure ",n," cannot be downloaded: ",myid,contcar_name_tmp) #GS tmp
+            print("structure ",n," cannot be downloaded: ",myid,contcar_name_orig) #GS tmp
             this_comp.errors.append('no aflow structure')
         else:
             nl=1
-            contcar_name=path+"/CONTCAR"+"_"+str(n)
+            #contcar_name=path+"/CONTCAR"+"_"+str(n)
             fstrout=open(contcar_name,'w')
-            with open (contcar_name_tmp, 'r') as f:
+            with open (contcar_name_orig, 'r') as f:
                 for line in f:
                     if nl==6:
                         if any(char.isdigit() for char in line):
@@ -114,7 +127,7 @@ def aflow2compound(dat,dow,n,Bcat_all=None,perocheck=False,wgap=False):
                     fstrout.write(line)
                     nl +=1
             fstrout.close()
-            os.remove(contcar_name_tmp)
+            os.remove(contcar_name_orig)
             struct = IStructure.from_file(contcar_name)
             this_comp.struct=struct
 
@@ -122,7 +135,10 @@ def aflow2compound(dat,dow,n,Bcat_all=None,perocheck=False,wgap=False):
     #from now: perovskite determination of pymatgen structure, for now (16nov23) only one criterion
     if perocheck and this_comp.struct: 
         this_comp.is_pero=check_pero(struct,Bcat_all)
-        if not dow: os.remove(contcar_name)
+    if keep_structure: 
+        this_comp.otherprops['structure_file_name'] = contcar_name
+    else:
+        os.remove(contcar_name)
     return this_comp
 
 

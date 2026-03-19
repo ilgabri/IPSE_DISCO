@@ -55,6 +55,11 @@ def out_materials(mats,fname_out,wpero,wgap,wstab):#mats is a list of 'Compound'
     lmin=[] ; lfull=[]
     for n,mat in enumerate(mats):
         ltmp=[n,mat.formula]
+        #try:
+        #    ltmp=[n,mat.formula]
+        #except:
+        #    print("compound missing...")
+        #    continue
         if wgap:
             ltmp.append(mat.gap_value)
             ltmp.append(mat.gap_isdirect)
@@ -91,16 +96,17 @@ def out_materials(mats,fname_out,wpero,wgap,wstab):#mats is a list of 'Compound'
     if any(len(i.errors)>0 for i in mats) or any(len(i.warnings)>0 for i in mats):
         with open('ID_errs.out','w') as f:
             for i,m in enumerate(mats):
-                if m.errors or m.warnings: #this syntax should be enough to check if a list is empty
-                    f.write(str(i)+" "+str(m.formula)+"\n")
-                    f.write("errors: ")
-                    for e in m.errors:
-                        f.write(f"{e} ; ")
-                    f.write("\n")
-                    f.write("warnings: ")
-                    for e in m.warnings:
-                        f.write(f"{e} ; ")
-                    f.write("\n")
+               if m.errors or m.warnings: #this syntax should be enough to check if a list is empty
+                   f.write(str(i)+" "+str(m.formula)+"\n")
+                   f.write("errors: ")
+                   for e in m.errors:
+                       f.write(f"{e} ; ")
+                   f.write("\n")
+                   f.write("warnings: ")
+                   for e in m.warnings:
+                       f.write(f"{e} ; ")
+                   f.write("\n")
+               f.write("material not found...\n")
             f.write("Finished printing materials warnings and errors on : "+str(datetime.datetime.now().replace(microsecond=0))+"\n")
 
 

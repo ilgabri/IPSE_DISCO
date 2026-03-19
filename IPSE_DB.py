@@ -42,8 +42,8 @@ if __name__=="__main__":
                 ip.npages=50
                 ip.pagsize=200
             elif ip.database=="oqmd":
-                ip.npages=5
-                ip.pagsize=2000
+                ip.npages=100
+                ip.pagsize=50
     
     wdatabase=False
     if ip.db_create or ip.db_update:

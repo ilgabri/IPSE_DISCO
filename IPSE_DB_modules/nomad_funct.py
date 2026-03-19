@@ -46,23 +46,17 @@ def nomad_get_structure(dat):#creates a pymatgen Structure object from atomic co
     #struct.to(fmt = 'poscar',filename = 'POSCAR_'+str(n))
     return struct
 
-def nomad2compound(datum,n,dow,Bcat_all=None,perocheck=False,wgap=False):
+def nomad2compound(datum,n,w_fetch_structure=False,Bcat_all=None,wgap=False):
     #transforms the material data from nomad query into an instance of the 'Compound' class (defined in funct_general.py)  
     try:
         this_comp=Compound(datum['archive']['results']['material']['chemical_formula_descriptive'])
     except:
         return None # for now skip this compound if it doesnt even have a brute formula
-    try:
-        this_comp.struct=nomad_get_structure(datum)
-    except:
-        this_comp.errors.append('no nomad structure')
-    else:
-        if perocheck: 
-            try:
-                this_comp.is_pero=check_pero(this_comp.struct,Bcat_all)
-            except:
-                this_comp.errors.append("pero check failed")
-        if dow: this_comp.struct.to(fmt = 'poscar',filename = 'CONTCAR_'+str(n))
+    if w_fetch_structure:
+        try:
+            this_comp.struct=nomad_get_structure(datum)
+        except:
+            this_comp.errors.append('no nomad structure')
     try:
         len_run=len(datum['archive']['run'])
     except:

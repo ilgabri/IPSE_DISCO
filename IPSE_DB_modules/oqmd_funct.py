@@ -31,7 +31,9 @@ def oqmd_species_string(A,B,C):
             else:
                 types+=el+"-"
         types=types[:-1]+"),("
-    if C[0]!="any":
+    if C[0]=="any":
+        types=types[:-2]+")" #-2 to delete last comma
+    else:
         for el in C:
             if isinstance(el,list):
                 types+=(atoms_or(el))+","
@@ -54,11 +56,17 @@ def oqmd_get_structure(cell_string,sites_strings):
         coords.append([float(i) for i in atom[1:]])
     return(Structure(lattice=cell_string,species=species,coords=coords))
 
-def oqdm2compound(oqmd_entry):
+def oqmd2compound(oqmd_entry,fetch_structure=True):
     "takes an entry from oqmd (dictionary) and transforms it into an intance of the 'Compound' class"
     compound=Compound(oqmd_entry['composition'].replace(" ",""))
     compound.ID=oqmd_entry['entry_id']
-    compound.struct=oqmd_get_structure(oqmd_entry['unit_cell'],oqmd_entry['sites'])
+    if fetch_structure:
+        try:
+            compound.struct=oqmd_get_structure(oqmd_entry['unit_cell'],oqmd_entry['sites'])
+        except:
+            compound.struct=None
+            compound.errors.append("no oqmd structure")
+            print("issue: no structure for compound ",oqmd_entry['composition'],oqmd_entry['entry_id'])
     compound.gap_value=oqmd_entry['band_gap']
     #compound.errors , compound.warnings
     compound.code='VASP'

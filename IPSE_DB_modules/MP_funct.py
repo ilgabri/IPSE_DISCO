@@ -47,7 +47,7 @@ def MP_elements4query(A,B,C): #creates a list of element queries MP. In particul
             Qelem.append({"elements":list(com),"exclude":ltmp})
     return Qelem
 
-def mp2compound(datum,n,dow,Bcat_all=None,perocheck=False,wgap=False,wstab=False):
+def mp2compound(datum,n,w_fetch_structure,Bcat_all=None,perocheck=False,wgap=False,wstab=False):
     this_comp=Compound(datum.formula_pretty)
     this_comp.ID=datum.material_id
     this_comp.code='vasp'
@@ -62,16 +62,12 @@ def mp2compound(datum,n,dow,Bcat_all=None,perocheck=False,wgap=False,wstab=False
     if wgap:
         this_comp.gap_isdirect=datum.is_gap_direct
         this_comp.gap_value=datum.band_gap
-    if dow or perocheck: 
-        #if datum.structure==None:
-        #    this_comp.errors.append('no MP structure')
-        #    continue
-        this_comp.struct=datum.structure
-        contcar_name='CONTCAR_'+str(n)
-        this_comp.struct.to(fmt = 'poscar',filename = contcar_name)
-    if perocheck:
-        this_comp.is_pero=check_pero(this_comp.struct,Bcat_all)
-        if not dow: os.remove(contcar_name)
+    if w_fetch_structure:
+        try:
+            this_comp.struct=datum.structure
+        except:
+            this_comp.struct=None
+            this_comp.errors.append('no MP structure')
     #NO CHECKS FOR ERR AND WARNS!
     return this_comp
 
