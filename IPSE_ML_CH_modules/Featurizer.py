@@ -105,7 +105,7 @@ def features_from_formula(formula,feature_types,elements_index,properties_for_st
 def get_formula_features_matminer(formulas,features_style,wpnorm=False,njobs=1,feat_names_only=False):
     from matminer.featurizers.composition import ElementProperty
     from matminer.featurizers.conversions import StrToComposition
-    from hide_print import HiddenErr
+    from IPSE_ML_CH_modules.hide_print import HiddenErr
     #from hide_print import HiddenPrints
     #with HiddenPrints():
     #print("CALLING MATMINER FEATS, labels:",feat_names_only)

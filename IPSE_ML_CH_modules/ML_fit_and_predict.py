@@ -100,7 +100,8 @@ class ML_FitAndPredict():
 
         NOTE: the best model is chosen as the one with lowest mean average error on test sets
         """
-        print_all_test_train=False
+        print_all_test_train = False
+        t_max_fitting = 21600 #21600 is 6h
         if os.path.exists(file_name_statistics): os.remove(file_name_statistics)
         X_unscaled = np.asarray(features_matrix)
         scikit_scaler = StandardScaler()
@@ -208,7 +209,7 @@ class ML_FitAndPredict():
             folds = KFold(n_splits=n_test_train_splits,shuffle=True,random_state=0)
             for model_name,model in self.models_to_test.items():
                 try:
-                    signal.alarm(1200)   # timeout = 2 seconds
+                    signal.alarm(t_max_fitting)   # timeout
                     try:
                         scores = cross_validate(model,X,y,scoring=('r2', 'neg_mean_absolute_error'),
                                 cv=folds,n_jobs=n_jobs_TT,return_train_score=True,error_score='raise')
@@ -229,11 +230,11 @@ class ML_FitAndPredict():
                         with open(file_name_statistics,"a") as f:
                             f.write("average MAE on test set for this model:   "+str(average_MAE_test)+"\n")
                     except:
-                        print(model_name," CRASHED!")
+                        print(model_name,"CRASHED! ",flush=True)
                     signal.alarm(0)   # cancel timeout
                 except Timeout:
                     with open(file_name_statistics,"a") as f:
-                        f.write("TIMEOUT!!! ",model_name)
+                        f.write("TIMEOUT!! ",model_name,flush=True)
         with open(file_name_statistics,"a") as f:
             f.write("best model: "+self.best_model_name+" (MAE: "+str(best_MAE)+" ); will be fitted to all training data and saved\n")
         self.best_model.fit(X, y)
