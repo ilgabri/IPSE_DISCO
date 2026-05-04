@@ -10,6 +10,7 @@ import multiprocessing as mp
 from IPSE_ML_CH_modules.Featurizer import *
 from IPSE_ML_CH_modules.Eorb_Thakkar import atomic_orbitals
 from IPSE_ML_CH_modules.Waber_Cromer_radii import WC_atomic_radii
+from IPSE_ML_CH_modules.sanderson_EN import sanderson_EN #b/c mendeleev's EN has a kinda bug as of march '26
 
 
 
@@ -86,7 +87,7 @@ class Data4ML:
             if data4feat: self.initial_data=df.filter(data4feat_columns,axis=1)
             if target: self.target=df[target_column].tolist()
 
-    def get_atomic_data(self,properties_groups=[],excluded_elements=[],Z_max=90):
+    def get_atomic_data(self,properties_groups=[],excluded_elements=[],Z_max=100,runtime=False,export_props=False):
         """ Creates a pandas dataframe (self.atomic_properties) with atomic properties, to be 
         used to calculate ML features  from the chemical formula. First column is chemical 
         elements ['element'], the other are the properties. 
@@ -104,7 +105,9 @@ class Data4ML:
 
         excluded_elements (list of str): elements to be excluded (not much for cpu 
             efficiency but rather because some elements may not be in the adopted libraries)
-        Z_max (int): maximum atomic number considered. For now 90 (because of Mendeleev?), reasonable
+        Z_max (int): maximum atomic number considered. For now 100
+        runtime (bool): ...
+        export_props (bool): ...
         """
         def mendeleev_prop_to_df(prop,is_method=False,is_electronegativity=False):
             """for a given property, make the corresponding pandas column in self.atomic_properties
@@ -118,11 +121,20 @@ class Data4ML:
 
             props=[]
             for nel,element in enumerate(included_elements):
+                if prop=="group.symbol":
+                    if (mendeleev_element(element).atomic_number in range(58,72) or
+                    mendeleev_element(element).atomic_number > 89):
+                        props.append("IIIf")
+                        continue
                 if is_method:
                     props.append(operator.methodcaller(prop)(Mendeleev_instances[nel]))
                 elif is_electronegativity:
                     EN_type=prop.replace("electronegativity_","")
-                    props.append(operator.attrgetter("electronegativity")(Mendeleev_instances[nel])(EN_type))
+                    if EN_type=="sanderson": #reading Sanderson EN externally (see import) b/c Mendeleev 2026 has kinda bug
+                        props.append(sanderson_EN[element])
+                    else:
+                        props.append(operator.attrgetter("electronegativity")(Mendeleev_instances[nel])(EN_type))
+
                 else:
                     props.append(operator.attrgetter(prop)(Mendeleev_instances[nel]))
                 if (operator.attrgetter("symbol")(Mendeleev_instances[nel])) != element:
@@ -135,101 +147,125 @@ class Data4ML:
             for prop_n in range(1,number_properties+1):
                 props=[]
                 for nel,element in enumerate(included_elements):
+                    if element=="H" and prop=="ionenergies" and prop_n>1:
+                        props.append(operator.attrgetter(prop)('NaN')) #H has no additional IEs
+                        continue
                     props.append(operator.attrgetter(prop)(Mendeleev_instances[nel])[prop_n])
                 if (operator.attrgetter("symbol")(Mendeleev_instances[nel])) != element:
                     print(str(element)+prop+": element doesnt match" , file=sys.stderr)
                 self.atomic_properties[prop+str(prop_n)]=props.copy()
-        if not properties_groups: print("no properties requested in 'get_atomic_data'",file=sys.stderr)
-        included_elements=[]
-        included_elements = [elements[z].symbol for z in range(1,Z_max+1) if elements[z].symbol not in excluded_elements]
-        #for z in range(1,Z_max):
-        #    element=elements[z].symbol
-        #    if element not in excluded_elements: included_elements.append(element)
+        if not runtime:
+            import ast
+            self.atomic_properties=pd.read_csv("IPSE_ML_CH_modules/atomic_data_mendeleev.csv")
+            self.atomic_properties["oxistates"]=self.atomic_properties["oxistates"].apply(ast.literal_eval) #cause ox states are read as string
+            #this is a patch for an inelegant solution for multiple props (IE only for now) adopted below (to be updated if atomic properties change)...
+            if "ID1" in self.features_options:
+                if 'ionization_energy' in self.features_options["ID1"]:
+                    #print("there is IE") #GS tmp
+                    self.features_options["ID1"].remove('ionization_energy')
+                    self.features_options["ID1"].append('ionenergies1')
+                    self.features_options["ID1"].append('ionenergies2')
+        else:
+            if not properties_groups: print("no properties requested in 'get_atomic_data'",file=sys.stderr)
+            included_elements=[]
+            if export_props: 
+                included_elements = [elements[z].symbol for z in range(1,Z_max+1)]
+            else:
+                included_elements = [elements[z].symbol for z in range(1,Z_max+1) if elements[z].symbol not in excluded_elements]
 
-        self.atomic_properties=pd.DataFrame(included_elements, columns=['element'])#columns option just assings name to new df, has no 'filtering' effect
-        Mendeleev_instances=[]
-        for element in included_elements:
-            Mendeleev_instances.append(mendeleev_element(str(element)))
-        #these three properties are added regardless of the style (for now); they are used in style 3 but not only:
-        mendeleev_prop_to_df('period')
-        mendeleev_prop_to_df('group.symbol')
+            self.atomic_properties=pd.DataFrame(included_elements, columns=['element'])#columns option just assings name to new df, has no 'filtering' effect
+            Mendeleev_instances=[]
+            for element in included_elements:
+                Mendeleev_instances.append(mendeleev_element(str(element)))
+            #these three properties are added regardless of the style (for now); they are used in style 3 but not only:
+            mendeleev_prop_to_df('period')
+            mendeleev_prop_to_df('group.symbol')
 
-        if 1 in properties_groups: #properties from Mendeleev library
-            if "ID1" not in self.features_options:
-                print("WARNING: no options given for properties group 1",file=sys.stderr)
-                self.features_options["ID1"]=[]
-            props_to_add=[]
-            props_to_remove=[]
-            for prop in self.features_options["ID1"]:
-                if prop in ['period','group.symbol']: #cause these options already handled few lines above
-                    continue
-                if prop=="oxidation_states" or prop=="oxistates": continue #coz oxistates not needed in ID1
-                if prop=='metallic_radius_c12': 
-                    mendeleev_prop_to_df('metallic_radius_c12')
-                    self.atomic_properties.loc[self.atomic_properties['element']=='O','metallic_radius_c12']=73
-                    self.atomic_properties.loc[self.atomic_properties['element']=='F','metallic_radius_c12']=71
-                elif prop=='e_affinity': 
-                    props=[]
-                    #line below https://en.wikipedia.org/wiki/Electron_affinity_(data_page) in eV, other elements match with Mendeleev
-                    missing_Eaff_mendeleev={"He":-0.5,"Be":-0.5,"N":-0.07,"Ne":-1.2,"Mg":-0.4,"Ar":-1.0,"Mn":-0.5,
-                            "Zn":-0.6,"Kr":-1.0,"Cd":-0.7,"Xe":-0.8,"Yb":-0.02,"Hf":0.178,"Hg":-0.5,"Rn":-0.7,"Pu":-0.5,
-                            "Bk":-1.72,"Cf":-1.01,"Es":-0.30,"No":-2.33,"Lr":-0.31} 
-                    for nel,element in enumerate(included_elements):
-                        if element in missing_Eaff_mendeleev:
-                            e_aff=missing_Eaff_mendeleev[element]
-                            #e_aff=0.0
-                        else:
-                            e_aff=Element(Mendeleev_instances[nel].symbol).e_affinity
-                        #if not e_aff: 
-                        #    e_aff=0.0
-                        #    print(element," has no electron affinity") #GS tmp
-                        props.append(e_aff)
-                        if (operator.attrgetter("symbol")(Mendeleev_instances[nel])) != element:
-                            print(str(element)+prop+": element doesnt match" , file=sys.stderr)
-                        #print(element, e_aff) #GS tmp
-                    self.atomic_properties['e_affinity']=props.copy()
-                elif prop=='ionization_energy': 
-                    nIE=2 #nuber of ionization energies included
-                    mendeleev_proplist_to_df('ionenergies',number_properties=nIE)
-                    props_to_remove.append('ionization_energy')
-                    for n in range(1,nIE+1):
-                        props_to_add.append('ionenergies'+str(n))
-                elif prop=="electronegativity_martynov-batsanov" or prop=="electronegativity_sanderson":
-                    mendeleev_prop_to_df(prop,is_electronegativity=True)
-                elif prop=='nvalence':
-                    mendeleev_prop_to_df('nvalence',is_method=True)
-                else:
-                    mendeleev_prop_to_df(prop)
-            for p in props_to_remove:
-                self.features_options["ID1"].remove(p)
-            for p in props_to_add:
-                self.features_options["ID1"].append(p)
+            if 1 in properties_groups: #properties from Mendeleev library
+                if "ID1" not in self.features_options:
+                    print("WARNING: no options given for properties group 1",file=sys.stderr)
+                    self.features_options["ID1"]=[]
+                props_to_add=[]
+                props_to_remove=[]
+                for prop in self.features_options["ID1"]:
+                    if prop in ['period','group.symbol']: #cause these options already handled few lines above
+                        continue
+                    if prop=="oxidation_states" or prop=="oxistates": continue #coz oxistates not needed in ID1
+                    if prop=='metallic_radius_c12': 
+                        mendeleev_prop_to_df('metallic_radius_c12')
+                        self.atomic_properties.loc[self.atomic_properties['element']=='O','metallic_radius_c12']=73
+                        self.atomic_properties.loc[self.atomic_properties['element']=='F','metallic_radius_c12']=71
+                    elif prop=='e_affinity': 
+                        props=[]
+                        #line below https://en.wikipedia.org/wiki/Electron_affinity_(data_page) in eV, other elements match with Mendeleev
+                        missing_Eaff_mendeleev={"He":-0.5,"Be":-0.5,"N":-0.07,"Ne":-1.2,"Mg":-0.4,"Ar":-1.0,"Mn":-0.5,
+                                "Zn":-0.6,"Kr":-1.0,"Cd":-0.7,"Xe":-0.8,"Yb":-0.02,"Hf":0.178,"Hg":-0.5,"Rn":-0.7,"Pu":-0.5,
+                                "Bk":-1.72,"Cf":-1.01,"Es":-0.30,"No":-2.33,"Lr":-0.31} 
+                        for nel,element in enumerate(included_elements):
+                            if element in missing_Eaff_mendeleev:
+                                e_aff=missing_Eaff_mendeleev[element]
+                                #e_aff=0.0
+                            else:
+                                e_aff=Element(Mendeleev_instances[nel].symbol).e_affinity
+                            #if not e_aff: 
+                            #    e_aff=0.0
+                            #    print(element," has no electron affinity") #GS tmp
+                            props.append(e_aff)
+                            if (operator.attrgetter("symbol")(Mendeleev_instances[nel])) != element:
+                                print(str(element)+prop+": element doesnt match" , file=sys.stderr)
+                            #print(element, e_aff) #GS tmp
+                        self.atomic_properties['e_affinity']=props.copy()
+                    elif prop=='ionization_energy': 
+                        nIE=2 #nuber of ionization energies included; be careful with H, He, etc, see end of this function
+                        mendeleev_proplist_to_df('ionenergies',number_properties=nIE)
+                        props_to_remove.append('ionization_energy')
+                        for n in range(1,nIE+1):
+                            props_to_add.append('ionenergies'+str(n))
+                    elif prop=="electronegativity_martynov-batsanov" or prop=="electronegativity_sanderson":
+                        mendeleev_prop_to_df(prop,is_electronegativity=True)
+                    elif prop=='nvalence':
+                        mendeleev_prop_to_df('nvalence',is_method=True)
+                    else:
+                        mendeleev_prop_to_df(prop)
+                for p in props_to_remove:
+                    self.features_options["ID1"].remove(p)
+                for p in props_to_add:
+                    self.features_options["ID1"].append(p)
 
 
-        if 2 in properties_groups:
-            #prop=='oxidation_states' 
-            if "ID2" not in self.features_options:
-                print("WARNING: no options given for properties group 2",file=sys.stderr)
-                self.features_options["ID2"]=[]
-            mendeleev_prop_to_df('oxistates')
-            for index, row in self.atomic_properties.loc[:,['oxistates']].iterrows(): #kinda verified
-                #print(row['oxistates'])
-                if 0 in row['oxistates']: row['oxistates'].remove(0)
-        if 4 in properties_groups: #atomic orbital properties (file names below)
-            if "ID4" not in self.features_options:
-                print("WARNING: no options given for properties group 4",file=sys.stderr)
-                self.features_options["ID4"]=[]
-            df_energies = (pd.DataFrame.from_dict(atomic_orbitals, orient="index").reset_index().
-                    rename(columns={"index": "element"}))
-            df_radii    = (pd.DataFrame.from_dict(WC_atomic_radii, orient="index").reset_index().
-                    rename(columns={"index": "element"}))
-            merged_orbital_properties=pd.merge(df_radii, df_energies, on="element")
-            merged_orbital_properties=merged_orbital_properties[["element","Es","Ep","Ed","rs","rp","rd"]]#keeping only some columns
-            cols=merged_orbital_properties.columns.drop('element')
-            merged_orbital_properties[cols]=merged_orbital_properties[cols].apply(pd.to_numeric)
-            merged_orbital_properties=merged_orbital_properties.replace(np.nan,None)
-            self.atomic_properties=pd.merge(self.atomic_properties,merged_orbital_properties,on="element")
-        #print(self.atomic_properties.to_string()) #GS tmp
+            if 2 in properties_groups:
+                #prop=='oxidation_states' 
+                if "ID2" not in self.features_options:
+                    print("WARNING: no options given for properties group 2",file=sys.stderr)
+                    self.features_options["ID2"]=[]
+                mendeleev_prop_to_df('oxistates')
+                for index, row in self.atomic_properties.loc[:,['oxistates']].iterrows(): #kinda verified
+                    #print(row['oxistates'])
+                    if 0 in row['oxistates']: row['oxistates'].remove(0)
+            if 4 in properties_groups: #atomic orbital properties (file names below)
+                if "ID4" not in self.features_options:
+                    print("WARNING: no options given for properties group 4",file=sys.stderr)
+                    self.features_options["ID4"]=[]
+                df_energies = (pd.DataFrame.from_dict(atomic_orbitals, orient="index").reset_index().
+                        rename(columns={"index": "element"}))
+                df_radii    = (pd.DataFrame.from_dict(WC_atomic_radii, orient="index").reset_index().
+                        rename(columns={"index": "element"}))
+                merged_orbital_properties=pd.merge(df_radii, df_energies, on="element")
+                merged_orbital_properties=merged_orbital_properties[["element","Es","Ep","Ed","rs","rp","rd"]]#keeping only some columns
+                cols=merged_orbital_properties.columns.drop('element')
+                merged_orbital_properties[cols]=merged_orbital_properties[cols].apply(pd.to_numeric)
+                merged_orbital_properties=merged_orbital_properties.replace(np.nan,None)
+                self.atomic_properties=pd.merge(self.atomic_properties,merged_orbital_properties,on="element")
+            if export_props: 
+                self.atomic_properties.to_csv("atomic_data_mendeleev.csv", index=False)
+                #sys.exit()
+                #print(self.atomic_properties.to_string()) #GS tmp
+        if "H" not in excluded_elements: #fragile trick, be careful
+            try:
+                self.atomic_properties=self.atomic_properties.drop("ionenergies2",axis=1) #cause H has no IE2 cannot be compared
+            except:
+                print("ISSUE: trying to drop IE2 because H is involved, but failed")
+
     def calculate_formula_features(self,anion_elements,styles=[],ncore=1,get_also_labels=True):
         """Calculates ML features from ML from brute formula. the actual calculation is done by external 
         functions in Featurizer.py

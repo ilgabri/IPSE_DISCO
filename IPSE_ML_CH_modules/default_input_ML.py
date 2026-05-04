@@ -54,15 +54,18 @@ fitting=True
 validation=True
 fraction_validation=0.05 #fraction of data to be used for validation, remaining data are used for training/test
 
+ML_algorithms=["ETs"]#which ML algorithms. Options:
 n_test_train_splits=5
 
 #kinda advanced ML settings
 do_features_analysis=False
+shapley_feature_importance=True
+dropcolumn_feature_importance=False #cpu expensive but meaningful
 try_features_combination=False
 threshold_important_features=None #None not to fetch important features features, otherwise float (importance threshold) or int (# most important feats)  
 features_combinator_operators = None #allowed values: "polynomial","+","-","*","/","^2","^3","^-1","exp". None or empty to do feature importance w/o feat combination
 regularized_model_featcombo="elasticnet" # allowd options: elasticnet, lasso, elasticnetCV, lassoCV, SVR
-file_important_feats='impo_feats.txt' #ifile on which to save/read labels of important features; if ...; None to avoid saving/reading important features
+file_important_feats=None #ifile on which to save/read labels of important features; if ...; None to avoid saving/reading important features
 validate_with_impo_feats=False
 #note: validation with feature combination is not implemented: if a combo turns out to be good, it should be directly coded in
 

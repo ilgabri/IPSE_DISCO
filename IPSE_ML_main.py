@@ -75,7 +75,8 @@ def features_analysis(ML_data_instance=None,filename_features_analysis="features
     corr_threshold (float): all feat pairs with a correlation threshold above this value
         are printed
     file_export_feats (str of None): if set, the names/labels of the most important features according
-       to the set threshold are printed on the namesake file
+       to the set threshold are printed on the namesake file; also used to read important features
+       and return dataframe with only those features
     """
 
     def get_correlated_features(features_df,n_top_pairs=None,corr_threshold=corr_threshold):
@@ -100,12 +101,11 @@ def features_analysis(ML_data_instance=None,filename_features_analysis="features
     df_features=pd.DataFrame(ML_data_instance.features, columns=feature_labels)
 
     if importance or threshold_importance_features: 
-        #df_most_important_features = ML_predictor.features_importance(features_matrix=data_for_ml.features,
-        #        targets=data_for_ml.target,output_file_name=filename_features_analysis,file_action="w",
         df_most_important_features = ML_predictor.features_importance(features_matrix=ML_data_instance.features,
                 targets=ML_data_instance.target,output_file_name=filename_features_analysis,file_action="w",
-                feature_labels=feature_labels,n_jobs=n_jobs,return_features_threshold=threshold_importance_features)
-        if file_export_feats:
+                feature_labels=feature_labels,n_jobs=n_jobs,return_features_threshold=threshold_importance_features,
+                do_shap=INPUT["shapley_feature_importance"],do_drop_column=INPUT["dropcolumn_feature_importance"]) #TO BE CHANGED (using INPUT inside a function)
+        if threshold_importance_features and file_export_feats:
             with open(file_export_feats, 'w') as f:
                 f.write('\n'.join(df_most_important_features.columns))
 
@@ -116,6 +116,16 @@ def features_analysis(ML_data_instance=None,filename_features_analysis="features
             f.write("feat1    feat2    correl.coeff. \n")
             for pair, value in correlated_features.items():
                 f.write(str(pair)+"      "+str(value)+"\n")
+
+
+    #case in which the important features are read from file, no importance calculated
+    if not importance and file_export_feats and return_dataframe: 
+        with open(file_export_feats, 'r') as f:
+            important_feature_names = [line.strip() for line in f if line.strip()]
+        if not set(important_feature_names).issubset(df_features.columns):
+            print("PROBLEM! Request to fetch use features from file: ",file_export_feats ," but the following columns are missing:")
+            print(set(important_feature_names)- set(df_features.columns))
+        return df_features[important_feature_names]
 
     if return_dataframe:
         if threshold_importance_features:
@@ -140,17 +150,17 @@ if __name__== "__main__":
                 not any (pt_elements[z].symbol in ion for ion in elements_lists_any)]
 
 
-    if INPUT["fraction_validation"]:
-        fraction_fitting=1.0-INPUT["fraction_validation"]
-        if not INPUT["validation"]:
-            print("WARNING: fraction of data assigned to validation but validation not requested")
-    else:
-        fraction_fitting=1.0
-        if INPUT["validation"]:
-            print("WARNING: validation required but no data is assigned to validation; validation won't be performed")
-            INPUT["validation"]=False
-
     if not INPUT["skipDB"]:
+        if INPUT["fraction_validation"]:
+            fraction_fitting=1.0-INPUT["fraction_validation"]
+            if not INPUT["validation"]:
+                print("WARNING: fraction of data assigned to validation but validation not requested")
+        else:
+            fraction_fitting=1.0
+            if INPUT["validation"]:
+                print("WARNING: validation required but no data is assigned to validation; validation won't be performed")
+                INPUT["validation"]=False
+
         #Fetching data from Mongo, keeping lowest-E polymorph, divide between train/test and validation data
         data=mongo_to_pandas(excluded_elements=INPUT["excluded_elements"], elements_required_any=elements_lists_any,
                 bandgap_filter=INPUT["bandgap_filter"],fields_to_consider=INPUT["mongo_fields_to_consider"],n_elements=INPUT["n_elements_mongo"],
@@ -208,7 +218,8 @@ if __name__== "__main__":
             print("t feat: ",(t_end_feat - t_start_feat).total_seconds())
     
             t_start_ML=datetime.datetime.now()
-            ML_predictor=ML_FitAndPredict(n_core_ML=INPUT["ncpus_ML_algo"])
+            ML_predictor=ML_FitAndPredict(n_core_ML=INPUT["ncpus_ML_algo"],ML_algorithms=INPUT["ML_algorithms"])
+            print("t to instantiate ML algos: ",(datetime.datetime.now() - t_start_ML).total_seconds())
             ML_predictor.ML_fitting(features_matrix=data_for_ml.features,targets=data_for_ml.target,n_test_train_splits=INPUT["n_test_train_splits"],n_jobs_TT=INPUT["ncpus_cv_traintest"],
                     data_labels=data_for_ml.initial_data['formula'].to_list(),print_predictedVStrue=True,file_model='ML_model.pkl',file_scaler='scaler.pkl')
             t_end_fit=datetime.datetime.now()
@@ -218,21 +229,15 @@ if __name__== "__main__":
                 t_end_analysis=datetime.datetime.now()
                 print("t ML fit + analysis: ",(t_end_analysis - t_start_ML).total_seconds())
 
-            #GS tmp all
-            #df=features_analysis(ML_data_instance=data_for_ml,importance=False,correlation=False,return_dataframe=True,
-            #                                threshold_importance_features=None,file_export_feats=None)
-            #print(list(df.columns.values))
-            
-
-
             if INPUT["try_features_combination"]: 
                 print("started combining features...")
                 t_start_featcombo=datetime.datetime.now()
                 if INPUT["features_combinator_operators"]:
                     extended_features = ML_predictor.features_combination(combo_types= INPUT["features_combinator_operators"],
-                                            features_df=features_analysis(ML_data_instance=data_for_ml,importance=INPUT["do_features_analysis"],correlation=INPUT["do_features_analysis"],return_dataframe=True,
-                                            threshold_importance_features=INPUT["threshold_important_features"],file_export_feats=INPUT["file_important_feats"]),regularized_model=INPUT["regularized_model_featcombo"],
-                                            target=data_for_ml.target,return_expanded_features=True,n_jobs_cv=INPUT["ncpus_cv_regularization_combo"])
+                            features_df=features_analysis(ML_data_instance=data_for_ml,importance=INPUT["do_features_analysis"],correlation=INPUT["do_features_analysis"],return_dataframe=True,
+                            threshold_importance_features=INPUT["threshold_important_features"],file_export_feats=INPUT["file_important_feats"]),
+                            regularized_model=INPUT["regularized_model_featcombo"],
+                            target=data_for_ml.target,return_expanded_features=True,n_jobs_cv=INPUT["ncpus_cv_regularization_combo"])
                 else:
                     extended_features = (features_analysis(ML_data_instance=data_for_ml,importance=INPUT["do_features_analysis"],correlation=INPUT["do_features_analysis"],return_dataframe=True,
                                             threshold_importance_features=INPUT["threshold_important_features"],file_export_feats=INPUT["file_important_feats"])).copy()
@@ -246,14 +251,8 @@ if __name__== "__main__":
 
         if INPUT["validation"]: 
             if INPUT["validate_with_impo_feats"]:
-                with open(INPUT["file_important_feats"], 'r') as f:
-                    important_feature_names = f.read().splitlines()
-                if INPUT["features_combinator_operators"]: print("WARNING! Attempting to perform validation with feat combination, not implemented yet!!") 
-                features_for_validation_df_untrimmed=features_analysis(ML_data_instance=data_for_ml_validation,filename_features_analysis=None,importance=False,correlation=False,return_dataframe=True,n_jobs=1)
-                if not set(important_feature_names).issubset(features_for_validation_df_untrimmed.columns):
-                    print("PROBLEM! Reqeust to validate/predict using columns from file: ",INPUT["file_important_feats"]," but the following columns are missing:")
-                    print(set(important_feature_names)- set(features_for_validation_df_untrimmed.columns))
-                features_for_validation=features_for_validation_df_untrimmed[important_feature_names]
+                features_for_validation=features_analysis(ML_data_instance=data_for_ml_validation,file_export_feats=INPUT["file_important_feats"],
+                        importance=False,correlation=False,return_dataframe=True,n_jobs=1)
                 print("validating with subset of (important) features: ",len(features_for_validation.columns))
                 scaler_validation='scaler_extended.pkl'
                 ML_model_validation='ML_model_extended.pkl'
@@ -263,14 +262,6 @@ if __name__== "__main__":
                 ML_model_validation='ML_model.pkl'
             ML_predictor.ML_predict(features_matrix=features_for_validation,features_scaler=scaler_validation,input_ML_model=ML_model_validation,
                     file_name_predictions='predictions.log',true_values=data_for_ml_validation.target,data_labels=data_for_ml_validation.initial_data['formula'].to_list())
-            #this doesn't wwork b/c I'd need to calculate the features with the recipe of 'extended features', but the latter are calculated directly inside ML_predictor.features_combination and returned to the main (for the train-test data) 
-            #if INPUT["try_features_combination"]:
-            #    print("now doing validation with the extended set of features...")
-            #    ML_predictor.ML_predict(features_matrix=extended_features,features_scaler='scaler_extended.pkl',input_ML_model='ML_model_extended.pkl',
-            #        file_name_predictions='predictions_extended.log',true_values=data_for_ml_validation.target,data_labels=data_for_ml_validation.initial_data['formula'].to_list())
         t_end_pred=datetime.datetime.now()
         print("t ML tot: ",(t_end_pred - t_start_ML).total_seconds())
-
-
-
 

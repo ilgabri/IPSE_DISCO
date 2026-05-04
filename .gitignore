@@ -1,0 +1,77 @@
+# Byte-compiled / optimized / DLL files
+
+**pycache**/
+#*.py[cod]
+*$py.class
+
+# Virtual environments
+
+venv/
+env/
+.venv/
+
+# Environment variables
+
+.env
+.env.*
+
+# My own notes
+changes_and_notes.log
+utilities/not_shared
+
+#  # Distribution / packaging
+#  
+#  build/
+#  dist/
+#  *.egg-info/
+#  .eggs/
+#  
+#  # Installer logs
+#  
+#  pip-log.txt
+#  pip-delete-this-directory.txt
+#  
+#  # Unit test / coverage reports
+#  
+#  htmlcov/
+#  .tox/
+#  .nox/
+#  .coverage
+#  .coverage.*
+#  .cache
+#  pytest_cache/
+#  
+#  # Jupyter Notebook checkpoints
+#  
+#  .ipynb_checkpoints/
+#  
+#  # Logs
+#  
+#  *.log
+#  
+#  # OS-generated files
+#  
+#  .DS_Store
+#  Thumbs.db
+#  
+#  # IDEs and editors
+#  
+#  .vscode/
+#  .idea/
+#  *.swp
+#  *.swo
+#  
+#  # mypy / type checking
+#  
+#  .mypy_cache/
+#  .dmypy.json
+#  
+#  # PyCharm
+#  
+#  *.iml
+#  
+#  # Temporary files
+#  
+#  *.tmp
+#  *.bak
+

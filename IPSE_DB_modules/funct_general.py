@@ -194,8 +194,8 @@ class input_params_databases: #define the input parameters; upon init, default v
         with open(fname,"w") as f:
             f.write("oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n")
             f.write("oooooooooooooooooooooooooooooooooo   +++ IPSE DISCO +++  ooooooooooooooooooooooooooooooooooo\n")
-            f.write("oooooooooooooooooooooo     (IIT Platform for SEmiconductors DISCOvery)   ooooooooooooooooooo\n")
-            f.write("ooooooooooooooooooooooooooooooooooooooooo V1.0, Dec 2024 ooooooooooooooooooooooooooooooooooo\n")
+            f.write("oooooooooooooooooo     (Integrated Platform for SEmiconductors DISCOvery)   oooooooooooooooo\n")
+            f.write("oooooooooooooooooooooooooooooooooooooooo V1.0.1, Mar 2026 oooooooooooooooooooooooooooooooooo\n")
             f.write("oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n")
             f.write("oooooooooooooooooooooo  Gabriele Saleh, Istituto Italiano di Tecnologia oooooooooooooooooooo\n")
             f.write("oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\n")

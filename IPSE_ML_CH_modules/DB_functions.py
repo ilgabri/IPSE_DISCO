@@ -8,6 +8,7 @@ from mendeleev.ion import Ion
 from mendeleev import element as mendeleev_element
 from chemformula import ChemFormula
 import math
+from pymatgen.core import Structure
 
 
 class MongoFilters:
@@ -122,10 +123,26 @@ def filter_by_density(dataframe,cations,anions,threshold):
         rho_estimated=weight/V_estimated*1.66053907E+6
         return rho_estimated
 
+    def get_density(structure): #usd a few lones below
+        try:
+            return Structure.from_dict(structure).density
+        except Exception:
+            return None
 
     if 'density' not in dataframe.columns:
-        print("PROBLEM!! no density in the dataframe from mongoDB, cannot filter")
-        return dataframe
+        print("density not in the dataframe, trying to calculate it from the structure")
+        ##GS tmp
+        #try:
+        #    structure=dataframe.iloc[100]["struct"]
+        #    print("rho ",Structure.from_dict(structure).density)
+        #except:
+        #    print("failed to calculate one density")
+        try:
+            dataframe["density"] = dataframe["struct"].apply(get_density) #function a few lones above
+            print("density succesfully calculated")
+        except:
+            print("PROBLEM! Failed to calculate density, density filter not applied")
+            return dataframe
     ionic_radii_dict={}
     weight_dict={}
     for element in cations:

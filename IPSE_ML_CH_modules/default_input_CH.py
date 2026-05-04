@@ -10,7 +10,9 @@ CH_elements=[]
 elemental_energies= {}
 input_totalE=False
 print_unstable=True
-threshold_unstability=0.05
+threshold_instability=0.05
+threshold_instability_plot=None
+exclude_polymorphs=True
 
 #ML options
 ML_model_file='ML_model.pkl'
@@ -27,13 +29,27 @@ ncpus_features=1
 
 
 #file options
-compounds_files=["MP_chalcogenides.csv"] #file(s) where compounds and Eform are read from, can be csv or text (can be a list of files!)
+compounds_files=None #file(s) where compounds and Eform are read from, can be csv or text (can be a list of files!)
 file_has_header=True
 column_compound=0
 column_E=1
+column_label = None
 include_file_compounds_in_CH=True #whether compounds read from file are used to build the CH (similar to include_ML_in_CH)
 
 #mongo options
 db_server_name="mongodb://localhost:27017/"
 db_name=None
 db_collection_name=None
+include_ID=False
+
+#additional options
+calculate_XRD=False
+stability_threshold_XRD=0.0 #the XRD is calculated for all structures within this distance from hull. None to avoid this (only structure_files_XRD) 
+structures_path="." #where to look for structures (absolute path or relative to the script). By default, assumes same folder name as label and CONTCAR
+#(add 2nd default?). None for 
+#keep in mind that at some point we might add xrd from mongoDB
+
+#this might be dict (label:path) or just list of paths, in which case, the last folder becomes the label.It must include the file name!
+structure_files_XRD=None #list of str: additional specific structures for which the xrd is calculated. Added to structures_path!
+twotheta_range=(0,90)
+

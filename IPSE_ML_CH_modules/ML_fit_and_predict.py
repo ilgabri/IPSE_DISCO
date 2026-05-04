@@ -12,6 +12,10 @@ from sklearn.model_selection import cross_val_score, KFold, cross_validate
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.inspection import permutation_importance
 from sklearn.neighbors import LocalOutlierFactor
+from sklearn.base import clone  # ADDED
+
+from concurrent.futures import ProcessPoolExecutor, as_completed #multiprocessing-like but more robust 
+
 
 # this is from stackoverflow as I got the error of no space left on device
 import os
@@ -26,6 +30,47 @@ def handler(signum, frame):
     raise Timeout()
 signal.signal(signal.SIGALRM, handler)
 
+def Kfold_get_results(model,X,y,folds,n_jobs,return_indices=False):
+    #function to do the k fold fitting. Moved otside the class because it's needed
+    #by _fit_one_model (which also had to be outside for parallelism reasons)
+    scores = cross_validate(model,X,y,scoring=('r2', 'neg_mean_absolute_error'),
+        cv=folds,n_jobs=n_jobs,return_train_score=True,error_score='raise')
+    if return_indices:
+        train_idx, test_idx = ([],[])
+        for train, test in folds.split(X, y):
+            train_idx.append(train)
+            test_idx.append(test)
+    else:
+        train_idx = test_idx = None
+
+    return {
+            "MAE_train" :-scores['train_neg_mean_absolute_error'],
+            "MAE_test": -scores['test_neg_mean_absolute_error'],
+            "r2_train" :scores['train_r2'],
+            "r2_test" :scores['test_r2'],
+            "train_idx": train_idx, "test_idx": test_idx,
+        }
+
+
+
+def _fit_one_model(model_name, model, X, y, folds, n_jobs_TT, n_test_train_splits):
+    #function to fit one model, created to treat ML_models in parallel when fitting
+    #it has to be outside the class to work with ProcessPoolExecutor
+    try:
+        cv_results = Kfold_get_results(
+            model,
+            X,
+            y,
+            folds=folds,
+            n_jobs=n_jobs_TT,
+            return_indices=False
+        )
+
+        average_MAE_test = sum(cv_results["MAE_test"]) / n_test_train_splits
+
+        return model_name, model, cv_results, average_MAE_test, None
+    except Exception as e:
+        return model_name, model, None, None, e
 
 class ML_FitAndPredict():
     """
@@ -50,29 +95,25 @@ class ML_FitAndPredict():
             perform regularization (L1 or L2) to select a few important combinations (can return df)
         ML_predict: predict target values based on supplied features, adopting self.best_model. Can be used for valiation.
     """
-    def __init__(self,n_core_ML=1):
+    def __init__(self,n_core_ML=1,ML_algorithms=[]):
         self.models_to_test=None
         self.best_model=None
         self.best_model_name=None
         self.scaler=None
         self.predictedVStrue=None
-        self._make_ML_instances(n_core=n_core_ML,external=True)
-    def _make_ML_instances(self,n_core=1,external=False):#temporary function to test ML models
+        self._make_ML_instances(n_core=n_core_ML,ML_algos=ML_algorithms)
+        self.n_core_ML=n_core_ML
+    def _make_ML_instances(self,n_core=1,ML_algos=["all"]):#temporary function to test ML models
         """"instantiates the sklearn ML models, typically from an external py file
         Attributes:
             n_core (int): #cpus to be used in ML algorithms, when the ML algo allows it
-            external (bool): if True, ML algotihm Instances are created in Instances_MLalgos.py
+            ML_algos (list of str): ML algorithms to be used (Instances_MLalgos.py). 
+                Use PICK_<algoname> to select spefic algorithm/hyperparameters. Use "all" to scan 
+                several possible algoirhtms and hyperparameters
         """
-        #ExtraTree_64=ExtraTreesRegressor(random_state=0,n_jobs=n_core,n_estimators=64)
-        #svr_12=SVR(C=12)
-        if external:
-            from IPSE_ML_CH_modules.Instances_MLalgos import create_ML_instances
-            self.models_to_test=create_ML_instances(n_core)
-        else:
-            from sklearn.dummy import DummyRegressor
-            dum1=DummyRegressor(strategy='mean')
-            dum2=DummyRegressor(strategy='median')
-            self.models_to_test={'dum1':dum1,'dum2':dum2}
+        #could put if conditions on ML_algos to instantiate ML algos directly here 
+        from IPSE_ML_CH_modules.Instances_MLalgos import create_ML_instances
+        self.models_to_test=create_ML_instances(n_core,ML_algos)
     def ML_fitting(self,features_matrix,targets,n_test_train_splits=5,n_jobs_TT=1,data_labels=None,
             file_name_statistics='fitting.log',print_predictedVStrue=False,
             file_name_predictedVStrue='predictedVStrue.log',file_model=None,file_scaler=None):
@@ -100,8 +141,22 @@ class ML_FitAndPredict():
 
         NOTE: the best model is chosen as the one with lowest mean average error on test sets
         """
-        print_all_test_train = False
+        #---------------------developer variables--------------------------------------------------------------------
+        #this write the true vs predicted file for the test set of each k-fold batch and for each tested ML algo. Also 
+        #divides into badly and goodly predicted (threshold_bad)
+        print_all_test_train = False #prints the results of each cross validaton batch, also hovering-friendly format
+        threshold_bad=0.25
+
+        #this sets a maximum time (s) for a given fitting test, but it doesn't apply to models run in parallel
         t_max_fitting = 21600 #21600 is 6h
+
+        #ML models whose name starts with these strings are run in parallel (tuple b/c it makes the synthax easier later). MIND! Sklearn 
+        #sometimes parallelizes though OMP_NUM_THREADS / MKL_NUM_THREADS / OPENBLAS_NUM_THREADS / NUMEXPR_NUM_THREADS , so must make sure 
+        #I use in parallel only algos that don't do that (and that don't use n_jobs > 1, but there's a check for that
+        #nuSVR has been tested and it does give speedup
+        algos_in_parallel=("nuSVR") #SVR has been tested and it does give expected speedup 
+        #algos_in_parallel=("nuSVR","GBR","HGB","GPR") #algos that don't use n_jobs (but might use threads) 
+        #------------------------------------------------------------------------------------------------------------
         if os.path.exists(file_name_statistics): os.remove(file_name_statistics)
         X_unscaled = np.asarray(features_matrix)
         scikit_scaler = StandardScaler()
@@ -135,106 +190,153 @@ class ML_FitAndPredict():
 
         y = np.asarray(targets)
 
-        best_MAE=1.E+6
+        best_MAE= float("inf")
+
         if print_all_test_train:
-            kf = KFold(n_splits=n_test_train_splits, shuffle=True, random_state=41) 
+            folds = KFold(n_splits=n_test_train_splits, shuffle=True, random_state=41) 
             for model_name,model in self.models_to_test.items():
-                train_r2_scores = []
-                test_r2_scores = []
-                train_mae_scores = []
-                test_mae_scores = []
-                for fold, (train_idx, test_idx) in enumerate(kf.split(X)):
-                    X_train, X_test = X[train_idx], X[test_idx]
-                    y_train, y_test = y[train_idx], y[test_idx]
-                    model.fit(X_train, y_train)
-                    y_train_pred = model.predict(X_train)
-                    y_test_pred = model.predict(X_test)
-
-                    r2_train = r2_score(y_train, y_train_pred)
-                    r2_test = r2_score(y_test, y_test_pred)
-                    mae_train = mean_absolute_error(y_train, y_train_pred)
-                    mae_test = mean_absolute_error(y_test, y_test_pred)
-
-                    train_r2_scores.append(r2_train)
-                    test_r2_scores.append(r2_test)
-                    train_mae_scores.append(mae_train)
-                    test_mae_scores.append(mae_test)
-
-
-                    filename="test_LabelPredTrue_"+model_name+"_fold"+str(fold)
-                    threshold_bad=0.25
-
-                    lof = LocalOutlierFactor(n_neighbors=20,novelty=True)
-                    lof.fit(X_train)
-                    OOD_score = lof.decision_function(X_test)
-
-                    with open (filename,"w") as f, open (filename+"_good","w") as f_good,open (filename+"_bad","w") as f_bad:
-                        for n,i in enumerate(test_idx):
-                            if data_labels: f.write(data_labels[i])
-                            f.write("\t"+str(y_test_pred[n]))
-                            f.write("\t"+str(y_test[n]))
-                            f.write("\t"+str(y[i]))
-                            f.write("\t"+str(OOD_score[n]))
-                            f.write("\n")
-                            err=abs(y_test_pred[n]-y[i])
-                            if err < threshold_bad:
-                                if data_labels: f_good.write(data_labels[i].ljust(20))
-                                f_good.write("\t"+str(y_test_pred[n]).rjust(20))
-                                f_good.write("\t"+str(y_test[n]).rjust(20))
-                                f_good.write("\t"+str(err).rjust(20))
-                                f_good.write("\t"+str(OOD_score[n]).rjust(20))
-                                f_good.write("\n")
-                            else:
-                                if data_labels: f_bad.write(data_labels[i].ljust(20))
-                                f_bad.write("\t"+str(y_test_pred[n]).rjust(20))
-                                f_bad.write("\t"+str(y_test[n]).rjust(20))
-                                f_bad.write("\t"+str(err).rjust(20))
-                                f_bad.write("\t"+str(OOD_score[n]).rjust(20))
-                                f_bad.write("\n")
-
+                #Kfold_get_results defined outside the class
+                cv_results=Kfold_get_results(model,X,y,folds=folds,n_jobs=n_jobs_TT,return_indices=True)
                 with open(file_name_statistics,"a") as f:
                     f.write("***ML model: "+model_name+" ***\n")
                     f.write("r2 train      r2 test      MAE train    MAE test\n")
-                    for batch_n in range(len(train_mae_scores)):
-                        f.write(str(train_r2_scores[batch_n])+"\t"+str(test_r2_scores[batch_n])+"\t"+str(train_mae_scores[batch_n])+"\t"+str(test_mae_scores[batch_n])+"\n")
-                average_MAE_test=sum(test_mae_scores)/len(test_mae_scores)
+                for batch_n in range(n_test_train_splits):
+                    X_train, X_test = X[cv_results["train_idx"][batch_n]],X[cv_results["test_idx"][batch_n]]
+                    y_train, y_test = y[cv_results["train_idx"][batch_n]],y[cv_results["test_idx"][batch_n]]
+                    model.fit(X_train, y_train)
+                    y_train_pred = model.predict(X_train)
+                    y_test_pred = model.predict(X_test)
+                    lof = LocalOutlierFactor(n_neighbors=20,novelty=True)
+                    lof.fit(X_train)
+                    OOD_score = lof.decision_function(X_test)
+                    filename="test_LabelPredTrue_"+model_name+"_fold"+str(batch_n)
+
+                    def make_string4here(l1,l2,l3,l4,l5): #dumb function to compress lines below
+                        return("\t"+str(l1).ljust(20)+"\t"+str(l2).rjust(20)+"\t"+"\t"+str(l3).rjust(20)+"\t"+
+                                str(l4).rjust(20)+"\t"+str(l5).rjust(20)+"\n")
+
+                    with open (filename,"w") as f, open (filename+"_good","w") as f_good,open (filename+"_bad","w") as f_bad:
+                        f.write("(formula)   y_pred    y_true       OOD_score")
+                        f_good.write("(formula)   y_pred    y_true   err    OOD_score")
+                        f_bad.write("(formula)   y_pred    y_true   err    OOD_score")
+                        for n,i in enumerate(cv_results["test_idx"][batch_n]):
+                            label=(data_labels[i] if data_labels else "")
+                            f.write(make_string4here(label,y_test_pred[n],y_test[n],"",OOD_score[n]))
+                            err=abs(y_test_pred[n]-y[i])
+                            if err < threshold_bad:
+                                f_good.write(make_string4here(label,y_test_pred[n],y_test[n],err,OOD_score[n]))
+                            else:
+                                f_bad.write(make_string4here(label,y_test_pred[n],y_test[n],err,OOD_score[n]))
+                    with open(file_name_statistics,"a") as f:
+                        f.write(str(cv_results["r2_train"][batch_n])+"\t"+str(cv_results["r2_test"][batch_n])
+                                +"\t"+str(cv_results["MAE_train"][batch_n])+"\t"+str(cv_results["MAE_test"][batch_n])+"\n")
+                average_MAE_test=sum(cv_results["MAE_test"])/n_test_train_splits
                 if average_MAE_test < best_MAE:
                     best_MAE=average_MAE_test
                     self.best_model=model
                     self.best_model_name=model_name
                 with open(file_name_statistics,"a") as f:
-                    f.write("average MAE on test set for this model:   "+str(average_MAE_test)+"\n")
+                    f.write("av. test MAE model "+model_name+" "+str(average_MAE_test)+"\n")
 
         else:
-            folds = KFold(n_splits=n_test_train_splits,shuffle=True,random_state=0)
-            for model_name,model in self.models_to_test.items():
+
+
+            folds = KFold(n_splits=n_test_train_splits,shuffle=True,random_state=41)
+            models_in_parallel = {model_name: model for model_name, model in self.models_to_test.items() 
+                    if model_name.startswith(algos_in_parallel) }
+            models_onebyone =    {model_name: model for model_name, model in self.models_to_test.items()
+                    if not model_name.startswith(algos_in_parallel)}
+            
+            models_to_move=[]
+            for model_name,model in models_in_parallel.items():
+                if (hasattr(model, "n_jobs") and model.n_jobs > 1):
+                    print("ISSUE! a model using multiple jobs is requested to be parallelized ",
+                            model_name,model.n_jobs, "will be moved to models tested one by one")
+                    models_to_move.append(model_name)
+            for model_name in models_to_move:
+                models_onebyone[model_name]=models_in_parallel[model_name]
+                del models_in_parallel[model_name]
+           
+            parallel_results = []
+
+            #_fit_one_model defined outside the class
+            with ProcessPoolExecutor(max_workers=self.n_core_ML) as executor:
+                futures = [
+                    executor.submit(
+                        _fit_one_model,
+                        model_name,
+                        model,
+                        X,
+                        y,
+                        folds,
+                        n_jobs_TT,
+                        #1,
+                        n_test_train_splits
+                    )
+                    for model_name, model in models_in_parallel.items()
+                ]
+            
+                for future in as_completed(futures):
+                    parallel_results.append(future.result())
+
+            
+            for model_name, model, cv_results, average_MAE_test, error in parallel_results:
+            
+                if error is not None:
+                    print(model_name, "CRASHED!", flush=True)
+                    with open(file_name_statistics, "a") as f:
+                        f.write(model_name + " CRASHED!\n")
+                    continue
+            
+                with open(file_name_statistics, "a") as f:
+                    f.write("***ML model: " + model_name + " ***\n")
+                    f.write("r2 train      r2 test      MAE train    MAE test\n")
+            
+                    for batch_n in range(n_test_train_splits):
+                        f.write(
+                            str(cv_results["r2_train"][batch_n]) + "\t"
+                            + str(cv_results["r2_test"][batch_n]) + "\t"
+                            + str(cv_results["MAE_train"][batch_n]) + "\t"
+                            + str(cv_results["MAE_test"][batch_n]) + "\n"
+                        )
+            
+                if average_MAE_test < best_MAE:
+                    best_MAE = average_MAE_test
+                    self.best_model = model
+                    self.best_model_name = model_name
+            
+                with open(file_name_statistics, "a") as f:
+                    f.write("av. test MAE model " + model_name + " " + str(average_MAE_test) + "\n")
+
+
+            for model_name,model in models_onebyone.items(): #for now keeping the old structure for models that don't have to be treated in parallel
+                if (not hasattr(model, "n_jobs") or model.n_jobs ==1):
+                    print("WARNING! fitting parallelization requested but the model has no parallel option: ",model_name)
+
                 try:
                     signal.alarm(t_max_fitting)   # timeout
                     try:
-                        scores = cross_validate(model,X,y,scoring=('r2', 'neg_mean_absolute_error'),
-                                cv=folds,n_jobs=n_jobs_TT,return_train_score=True,error_score='raise')
-                        MAE_train=-scores['train_neg_mean_absolute_error']
-                        MAE_test=-scores['test_neg_mean_absolute_error']
-                        r2_train=scores['train_r2']
-                        r2_test=scores['test_r2']
+                        cv_results=Kfold_get_results(model,X,y,folds=folds,n_jobs=n_jobs_TT,return_indices=False)#defined outside class
                         with open(file_name_statistics,"a") as f:
                             f.write("***ML model: "+model_name+" ***\n")
                             f.write("r2 train      r2 test      MAE train    MAE test\n")
-                            for batch_n in range(len(MAE_train)):
-                                f.write(str(r2_train[batch_n])+"\t"+str(r2_test[batch_n])+"\t"+str(MAE_train[batch_n])+"\t"+str(MAE_test[batch_n])+"\n")
-                        average_MAE_test=sum(MAE_test)/len(MAE_test)
+                            for batch_n in range(n_test_train_splits):
+                                f.write(str(cv_results["r2_train"][batch_n])+"\t"+str(cv_results["r2_test"][batch_n])
+                                        +"\t"+str(cv_results["MAE_train"][batch_n])+"\t"+str(cv_results["MAE_test"][batch_n])+"\n")
+                        average_MAE_test=sum(cv_results["MAE_test"])/n_test_train_splits
                         if average_MAE_test < best_MAE:
                             best_MAE=average_MAE_test
                             self.best_model=model
                             self.best_model_name=model_name
                         with open(file_name_statistics,"a") as f:
-                            f.write("average MAE on test set for this model:   "+str(average_MAE_test)+"\n")
+                            f.write("av. test MAE model "+model_name+" "+str(average_MAE_test)+"\n")
                     except:
                         print(model_name,"CRASHED! ",flush=True)
                     signal.alarm(0)   # cancel timeout
                 except Timeout:
                     with open(file_name_statistics,"a") as f:
-                        f.write("TIMEOUT!! ",model_name,flush=True)
+                        f.write(f"TIMEOUT!! {model_name}\n")
+                        print(model_name,"TIMEOUT! ",flush=True)
         with open(file_name_statistics,"a") as f:
             f.write("best model: "+self.best_model_name+" (MAE: "+str(best_MAE)+" ); will be fitted to all training data and saved\n")
         self.best_model.fit(X, y)
@@ -258,85 +360,249 @@ class ML_FitAndPredict():
                         f.write(str(values[0])+"   "+str(values[1])+ "\n")
     #def ML_predict(self,features_matrix,features_scaler=None,ML_model_file_name=None,
     def features_importance(self,features_matrix,targets,feature_labels,output_file_name='feats_importance.out',
-            file_action="w",n_repeats=10,random_state=42,n_jobs=1,return_features_threshold=None):
-        """evaluate the importance of features in the best ML model found during fitting. 
-        It does both permutation importance and tree-based importance, if available. 
-
-        Attributes:
-        -----------
-        features_matrix (list of lists): features, must be the same used for fitting
-        targets (list): target values
-        feature_labels (list of str): label of features, must correspond to the external list (rows) of features 
-        output_file_name (str): name of the file on which feature importance is written (usually 
-            same file as for feature correlation)
-        file_action ('w' or 'a'): write from the beginning of file or append to an existing file 
-        n_repeats (int): number of repetitions (to average over) in the permutation importance
-        random_state (int): seed for the random state for permutation importance 
-        n_jobs (int): #cpus for the perutation importance
-        return_features_threshold (int or float): importance threshold or number of features to return 
-        
-        Usage: if return_features_threshold is not set, it writes on output_file_name the name of 
-        features and their importance. If set, it also returns a pandas df of the most important features.
-        If int, the most important n features are returned; if float (x), all features having importance > x.
+            file_action="w",n_repeats=10,random_state=42,n_jobs=1,return_features_threshold=None,
+            do_shap=False,do_drop_column=False,shap_background_size=100,drop_column_scoring=None,
+            cv=5):  # CHANGED: added cv
+        """evaluate the importance of features in the best ML model found during fitting.
+        It does permutation importance and tree-based importance, if available.
+    
+        Optional:
+        ---------
+        do_shap (bool): if True, compute SHAP feature importance
+        do_drop_column (bool): if True, compute drop-column feature importance
+        shap_background_size (int): number of samples used as SHAP background
+        drop_column_scoring (str or callable or None): scoring passed to the estimator for drop-column.
+            If None, estimator.score(...) is used.
+        cv (int or splitter): cross-validation splitter used to estimate feature importance  # CHANGED
         """
-        from IPSE_ML_CH_modules.Featurizer import features_from_formula #used just to get the labels of features 
+    
+        import datetime
+        import numpy as np
+        import pandas as pd
+        from sklearn.base import clone
+        from sklearn.inspection import permutation_importance
+    
         t_start=datetime.datetime.now()
         print("starting evaluation of features importance...")
-        if not self.best_model:
+    
+        if self.best_model is None:  # CHANGED
             print("PROBLEM!! trying to calculate features importance w/o having chosen the (best) model")
+            return
+    
         X_unscaled = np.asarray(features_matrix)
-        X = self.scaler.transform(X_unscaled)
         y = np.asarray(targets)
-        if len(feature_labels)!=len(features_matrix[0]):
-            print("PROBLEM! the feature labels are in different number from the actual features (1st row)",
-                    len(feature_labels),len(features_matrix[0]))
-        perm_importance = permutation_importance(self.best_model, X, y, n_repeats=10, random_state=random_state, 
-                          n_jobs=n_jobs)
-        perm_impo_mean=perm_importance.importances_mean
-        perm_impo_mean_labels=[(i,feature_labels[i],perm_impo_mean[i]) for i in range(len(feature_labels)) ]
-        sorted_importance=sorted(perm_impo_mean_labels, key=lambda x:x[2], reverse=True)
+    
+        if X_unscaled.ndim != 2 or X_unscaled.shape[0] == 0:  # CHANGED
+            print("PROBLEM! features_matrix must be a non-empty 2D array")
+            return
+    
+        if len(feature_labels)!=X_unscaled.shape[1]:  # CHANGED
+            print("PROBLEM! the feature labels are in different number from the actual features",
+                    len(feature_labels), X_unscaled.shape[1])
+            return
+    
+        # CHANGED: build CV splitter
+        from sklearn.model_selection import KFold, StratifiedKFold
+        if isinstance(cv, int):
+            is_classifier = getattr(self, "task", None) == "classification" or \
+                            hasattr(self.best_model, "predict_proba")
+            if is_classifier:
+                splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+            else:
+                splitter = KFold(n_splits=cv, shuffle=True, random_state=random_state)
+        else:
+            splitter = cv
+    
+        # CHANGED: accumulate fold-wise importances
+        perm_imps_folds = []
+        tree_imps_folds = []
+        shap_imps_folds = []
+        drop_imps_folds = []
+    
+        if do_drop_column and drop_column_scoring is not None:  # CHANGED
+            from sklearn.metrics import get_scorer
+            scorer = get_scorer(drop_column_scoring)
+        else:
+            scorer = None
+    
+        # CHANGED: CV loop
+        for fold_id, (train_idx, val_idx) in enumerate(splitter.split(X_unscaled, y), start=1):
+            X_train_unscaled, X_val_unscaled = X_unscaled[train_idx], X_unscaled[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+    
+            # CHANGED: fit scaler only on training fold
+            scaler_fold = clone(self.scaler)
+            X_train = scaler_fold.fit_transform(X_train_unscaled)
+            X_val = scaler_fold.transform(X_val_unscaled)
+    
+            # CHANGED: fit model only on training fold
+            model_fold = clone(self.best_model)
+            model_fold.fit(X_train, y_train)
+    
+            # ----------------------------
+            # CHANGED: permutation importance on validation fold
+            # ----------------------------
+            perm_result = permutation_importance(
+                model_fold, X_val, y_val,
+                n_repeats=n_repeats,
+                random_state=random_state,
+                n_jobs=n_jobs
+            )
+            perm_imps_folds.append(perm_result.importances_mean)
+    
+            # ----------------------------
+            # CHANGED: tree importance from fold-fitted model
+            # ----------------------------
+            if hasattr(model_fold, "feature_importances_"):
+                tree_imps_folds.append(np.asarray(model_fold.feature_importances_))
+    
+            # ----------------------------
+            # CHANGED: SHAP on fold-fitted model
+            # ----------------------------
+            if do_shap:
+                try:
+                    import shap
+                    rng = np.random.RandomState(random_state + fold_id)
+                    bg_size = min(shap_background_size, X_train.shape[0])
+                    bg_idx = rng.choice(X_train.shape[0], size=bg_size, replace=False)
+                    X_background = X_train[bg_idx]
+    
+                    explainer = shap.Explainer(model_fold, X_background)
+                    shap_values = explainer(X_val)
+    
+                    shap_array = shap_values.values if hasattr(shap_values, "values") else np.asarray(shap_values)
+    
+                    # binary/multiclass/multioutput handling
+                    if shap_array.ndim == 3:
+                        shap_array = np.mean(np.abs(shap_array), axis=2)
+                    shap_mean_abs = np.mean(np.abs(shap_array), axis=0)
+    
+                    shap_imps_folds.append(shap_mean_abs)
+                except Exception as e:
+                    print(f"PROBLEM: SHAP importance could not be computed in fold {fold_id}: {e}")
+    
+            # ----------------------------
+            # CHANGED: drop-column using validation-fold score
+            # ----------------------------
+            if do_drop_column:
+                try:
+                    if scorer is None:
+                        baseline_score = model_fold.score(X_val, y_val)
+                    else:
+                        baseline_score = scorer(model_fold, X_val, y_val)
+    
+                    fold_drop_importance = []
+                    for i in range(X_train.shape[1]):
+                        X_train_drop = np.delete(X_train, i, axis=1)
+                        X_val_drop = np.delete(X_val, i, axis=1)
+    
+                        model_drop = clone(self.best_model)
+                        model_drop.fit(X_train_drop, y_train)
+    
+                        if scorer is None:
+                            score_drop = model_drop.score(X_val_drop, y_val)
+                        else:
+                            score_drop = scorer(model_drop, X_val_drop, y_val)
+    
+                        fold_drop_importance.append(baseline_score - score_drop)
+    
+                    drop_imps_folds.append(np.asarray(fold_drop_importance))
+                except Exception as e:
+                    print(f"PROBLEM: drop-column importance could not be computed in fold {fold_id}: {e}")
+    
+        # CHANGED: average across folds
+        perm_impo_mean = np.mean(np.vstack(perm_imps_folds), axis=0)
+        perm_impo_mean_labels=[(i,feature_labels[i],perm_impo_mean[i]) for i in range(len(feature_labels))]
+        sorted_perm_importance=sorted(perm_impo_mean_labels, key=lambda x:x[2], reverse=True)
+    
         with open(output_file_name, file_action) as f:
-            f.write("***FEATURES PERMUTATION IMPORTANCE*** \n")
+            f.write("***FEATURES PERMUTATION IMPORTANCE (CV average)*** \n")  # CHANGED
             f.write("#feat feat_label importance \n")
-            for item in sorted_importance:
+            for item in sorted_perm_importance:
                 f.write(str(item[0])+"    "+str(item[1])+"    "+str(item[2])+"\n")
             f.write("\n list of feature number sorted by importance: \n")
-            feat_numbers=[feat[0] for feat in sorted_importance]
+            feat_numbers=[feat[0] for feat in sorted_perm_importance]
             f.write(','.join(str(num) for num in feat_numbers)+'\n')
-
-        try:
-            importance_list=self.best_model.feature_importances_.tolist()
-        except:
+    
+        sorted_tree_importance_list = None
+        if len(tree_imps_folds) == 0:  # CHANGED
             print("PROBLEM: feature importance not available, probably not a tree-based ML algo")
             with open(output_file_name, "a") as f:
                 f.write("PROBLEM: feature importance not available, probably not a tree-based ML algo\n")
         else:
-            labelled_importance_list=zip(feature_labels,importance_list)
-            sorted_importance_list=sorted(labelled_importance_list, key=lambda x:x[1], reverse=True)
+            tree_importance_mean = np.mean(np.vstack(tree_imps_folds), axis=0)  # CHANGED
+            labelled_tree_importance_list=[(i, feature_labels[i], tree_importance_mean[i]) for i in range(len(feature_labels))]  # CHANGED
+            sorted_tree_importance_list=sorted(labelled_tree_importance_list, key=lambda x:x[2], reverse=True)
             with open(output_file_name, "a") as f:
-                f.write("***FEATURES (tree) IMPORTANCE*** \n")
+                f.write("***FEATURES (tree) IMPORTANCE (CV average over fitted folds)*** \n")  # CHANGED
                 f.write("#feat feat_label importance \n")
-                for item in sorted_importance_list:
-                    f.write(str(item[0])+"    "+str(item[1])+"\n")
-
-        if return_features_threshold:
+                for item in sorted_tree_importance_list:
+                    f.write(str(item[0])+"    "+str(item[1])+"    "+str(item[2])+"\n")
+    
+        shap_importance_sorted = None  # CHANGED
+        if do_shap:
+            if len(shap_imps_folds) > 0:  # CHANGED
+                shap_mean_abs = np.mean(np.vstack(shap_imps_folds), axis=0)
+                shap_importance = [(i,feature_labels[i], shap_mean_abs[i]) for i in range(len(feature_labels))]
+                shap_importance_sorted = sorted(shap_importance, key=lambda x:x[2], reverse=True)
+    
+                with open(output_file_name, "a") as f:
+                    f.write("***FEATURES SHAP IMPORTANCE (CV average)*** \n")  # CHANGED
+                    f.write("#feat feat_label mean_abs_shap \n")
+                    for item in shap_importance_sorted:
+                        f.write(str(item[0])+"    "+str(item[1])+"    "+str(item[2])+"\n")
+            else:
+                with open(output_file_name, "a") as f:
+                    f.write("PROBLEM: SHAP importance could not be computed in any fold\n")
+    
+        drop_importance_sorted = None  # CHANGED
+        if do_drop_column:
+            if len(drop_imps_folds) > 0:  # CHANGED
+                drop_importance_mean = np.mean(np.vstack(drop_imps_folds), axis=0)
+                drop_importance = [(i, feature_labels[i], drop_importance_mean[i]) for i in range(len(feature_labels))]
+                drop_importance_sorted = sorted(drop_importance, key=lambda x:x[2], reverse=True)
+    
+                with open(output_file_name, "a") as f:
+                    f.write("***FEATURES DROP-COLUMN IMPORTANCE (CV average)*** \n")  # CHANGED
+                    f.write("#feat feat_label importance \n")
+                    for item in drop_importance_sorted:
+                        f.write(str(item[0])+"    "+str(item[1])+"    "+str(item[2])+"\n")
+            else:
+                with open(output_file_name, "a") as f:
+                    f.write("PROBLEM: drop-column importance could not be computed in any fold\n")
+    
+        if return_features_threshold is not None:
+            # CHANGED: safer fallback logic
+            if do_drop_column and drop_importance_sorted is not None:
+                final_importance=drop_importance_sorted
+                final_importance_type="drop column"
+            elif do_shap and shap_importance_sorted is not None:
+                final_importance=shap_importance_sorted
+                final_importance_type="SHAP"
+            else:
+                final_importance=sorted_perm_importance
+                final_importance_type="permutation"
+    
             features_df= pd.DataFrame(features_matrix, columns=feature_labels)
             if isinstance(return_features_threshold, int):
-                print("returning the ",return_features_threshold," most important features...")
-                feats_to_keep_labels=[tup[0] for tup in sorted_importance_list[:return_features_threshold]] #because it's a list of tuples
+                print("returning the ",return_features_threshold," most important features according to ",
+                        final_importance_type," ...")
+                feats_to_keep_labels=[tup[1] for tup in final_importance[:return_features_threshold]]
                 return features_df[feats_to_keep_labels]
             elif isinstance(return_features_threshold, float):
-                print("returning all feaatures with importance above ",return_features_threshold," :")
-                #feats_to_keep_labels=[n[1] for n in perm_impo_mean_labels if n[2]> return_features_threshold] #also good, keep original order
-                feats_to_keep_labels=[n[1] for n in sorted_importance if n[2]> return_features_threshold]
+                print("returning all features with importance above ",return_features_threshold,
+                        "according to",final_importance_type, " :")
+                feats_to_keep_labels=[n[1] for n in final_importance if n[2]> return_features_threshold]
                 print("using ",len(feats_to_keep_labels)," features")
                 return features_df[feats_to_keep_labels]
             else:
-                print("fature importance threshold set to unclear value, features are not returned")
-
+                print("feature importance threshold set to unclear value, features are not returned")
+    
         print("...features importance calculated")
         t_end=datetime.datetime.now()
         print("t feature importance: ",(t_end - t_start).total_seconds())
+
+
     def features_combination(self,combo_types=["polynomial"],features_df=None,target=None,regularized_model="elasticnet",
             output_reg_model="feat_combo.out",return_expanded_features=False,n_jobs_cv=1,
             threshold=1.E-5, alpha_regularization=0.05, seed_random=42, alphas=[0.05, 0.2, 0.6]): 
