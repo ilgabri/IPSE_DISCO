@@ -1,0 +1,28 @@
+This document briefly describe the purpose of each utility. More details can be found inside each script,
+most of which also have a "--help" option that explains their functionalities
+
+- create_vasp_folder.py: automatically create folders for vasp simulations starting from POSCAR files (they just need 
+  to have the same extension and POTCAR files named POTCAR_<element_name>.  
+  Typical usage: to create phase diagram with specific simulation settings (e.g. DFT functional) and/or combining structures from
+  different databases
+
+- filter_Eform.py: post-processing filter for the IPSE_DB module, filters out high-energy polymorphs. 
+  Typical usage: to save computational resources hen wants to recalculate a phase diagram with their own computational settings
+  and/or combining structures from different databases
+
+- grep_energies.py: goes through all folders and subfolders, look for vasp files, and prints: 
+  folder name, total formula, minimal Hill formula, total energy, total energy per atom.
+  Typical usage 1: easily extract final energies from vasp simulatons
+  Typical usage 2: create a file for IPSE_CH to generate a convex hull with the results of vasp simulations   
+
+- check_duplicates.py: from a set of (possibly tightly-converged) vasp simulations, finds structures that are duplicate of 
+  each other, groups them, and prints a script to copy unique structures in a separate folder 
+  Typical usage: if a long list of compounds was retrieved from different databases, one performs low-accuracy 
+  but tightly converged simulations and exclude duplicates before performing accurate, 'production' simulations 
+
+- check_vasp.py: highly useful to handle many vasp simulations. It checks that every simulation finished correctly
+  by inspecting the vasp files inside each simulation folder. It then prints a report. Not so fast for hundreds of 
+  folders (like 10-20 min for 400-700 folders)
+  Typical usage: inspect all simulations, restart those that didn't converge, manually change incar files in those crashed 
+  
+    

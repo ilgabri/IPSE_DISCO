@@ -464,7 +464,10 @@ if __name__== "__main__":
             compounds_not_in_CH_df=pd.DataFrame({'name':[comp.name for comp in compounds_to_be_checked],
                 #"phase separation E":[phase_diagram.get_form_energy_per_atom(comp) for comp in compounds_to_be_checked], #this gives WRONG values for compounds out of the CH
                 "phase separation E":[phase_diagram.get_e_above_hull(comp,allow_negative=True) for comp in compounds_to_be_checked],
-                "Eform per atom":[phase_diagram.get_form_energy_per_atom(comp) for comp in compounds_to_be_checked]})
+                "Eform per atom":[phase_diagram.get_form_energy_per_atom(comp) for comp in compounds_to_be_checked],
+                "label":[comp.name for comp in compounds_to_be_checked],
+                "reduced_formula":[comp.name for comp in compounds_to_be_checked]
+                })
             compounds_not_in_CH_df=compounds_not_in_CH_df.sort_values(by='phase separation E')
         with open("convex_hull"+"_"+"-".join(INPUT["CH_elements"])+".out","w") as f:
             f.write("***Stable Compounds***\n")
