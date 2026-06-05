@@ -25,4 +25,6 @@ most of which also have a "--help" option that explains their functionalities
   folders (like 10-20 min for 400-700 folders)
   Typical usage: inspect all simulations, restart those that didn't converge, manually change incar files in those crashed 
   
-    
+- custodian_HTvasp.py: a wrapper of cuctodian* to automatically handle a VASP simulation, including automatic error handling. 
+  To use this for high-throughput, combine it with scripts for habdling array of jobs (e.g. in slurm)     
+  *https://github.com/materialsproject/custodian
