@@ -242,35 +242,6 @@ if __name__== "__main__":
     INPUT = {k:v for k, v in vars(defaults).items()}
     INPUT.update(vars(user_input))
 
-    #below lines to import the options about the ML model and store them into ML_options
-    #TODO: consider doing this only if ML is activated, and anyway in the main
-    try:
-        import input_IPSE_ML
-    except ImportError:
-        input_IPSE_ML = None
-        print("warning! input_IPSE_ML does not exist. Using only default options...")
-    try:
-        import IPSE_ML_CH_modules.default_input_ML
-    except ImportError:
-        print("ISSUE! no default_input_ML.py file here, the code may crash if ML is used for building the convex hull...")
-    #here the ML variable names are defined, then their value is fetched from either input_IPSE_ML or default_input_ML
-    ML_options = ["options_ML_styles","styles_atomic_data","excluded_elements","anions","cations","styles_ML_features"]
-    for variable in ML_options:
-        if variable=="excluded_elements": continue #handled later 
-        try:
-            value = getattr(input_IPSE_ML, variable)
-        except (AttributeError, TypeError):
-            value = getattr(IPSE_ML_CH_modules.default_input_ML, variable)
-        globals()[variable] = value
-
-    #exlcuded_elements handled separately, once cations and anions are read
-    try:
-        excluded_elements = getattr(default_input_ML,"excluded_elements")
-    except:
-        from periodictable import elements as pt_elements
-        excluded_elements = [pt_elements[z].symbol for z in range(1,104) if
-        not any (pt_elements[z].symbol in ion for ion in [cations,anions])]
-
 
     #fetch data
     if "mongo" in INPUT["data_types_CH"]:
@@ -298,6 +269,34 @@ if __name__== "__main__":
                 column_property=INPUT["column_E"],column_label=INPUT["column_label"],file_has_header=INPUT["file_has_header"])
         
     if "ML" in INPUT["data_types_CH"]:
+        #below lines to import the options about the ML model and store them into ML_options
+        try:
+            import input_IPSE_ML
+        except ImportError:
+            input_IPSE_ML = None
+            print("warning! input_IPSE_ML does not exist. Using only default options...")
+        try:
+            import IPSE_ML_CH_modules.default_input_ML
+        except ImportError:
+            print("ISSUE! no default_input_ML.py file here, the code may crash if ML is used for building the convex hull...")
+        #here the ML variable names are defined, then their value is fetched from either input_IPSE_ML or default_input_ML
+        ML_options = ["options_ML_styles","styles_atomic_data","excluded_elements","anions","cations","styles_ML_features"]
+        for variable in ML_options:
+            if variable=="excluded_elements": continue #handled later 
+            try:
+                value = getattr(input_IPSE_ML, variable)
+            except (AttributeError, TypeError):
+                value = getattr(IPSE_ML_CH_modules.default_input_ML, variable)
+            globals()[variable] = value
+    
+        #exlcuded_elements handled separately, once cations and anions are read
+        try:
+            excluded_elements = getattr(default_input_ML,"excluded_elements")
+        except:
+            from periodictable import elements as pt_elements
+            excluded_elements = [pt_elements[z].symbol for z in range(1,104) if
+            not any (pt_elements[z].symbol in ion for ion in [cations,anions])]
+
         formulas_to_evaluate=[]
         if INPUT["max_elements_composition"]: 
             #generate all possible unique formulas given INPUT["max_elements_composition"] and INPUT["CH_elements"], including 
@@ -503,7 +502,7 @@ if __name__== "__main__":
             plotter = PDPlotter(phase_diagram,ternary_style="3d")
             CH_figure=plotter.get_plot()
 
-    if INPUT["plot_CH"] or INPUT["save_CH"]: 
+    if INPUT["plot_CH"]: 
         #to modify markers:
         #for trace in fig.data: 
         #    print(trace)
@@ -523,12 +522,25 @@ if __name__== "__main__":
         except:
             print("image could not be produced, likely because kaleido is not installed")
 
-
-    #developer part GS: insert in the compounds list the compounds for which you want to see the decomposition
-    #compounds=["CuBiSCl2"]
+    #----------------------------------------------------------------------------------------
+    #developer part GS: different ways to get the decomposition of a point in the convex hull
+    #----------------------------------------------------------------------------------------
+    ##1- if a compound is in the list of (unstable) compounds used for the hull
+    #compounds=["Cu3BiS3"]
     #for entry in compounds4PD:
     #    if entry.composition.reduced_formula in compounds:
     #        print(phase_diagram.get_decomp_and_phase_separation_energy(entry))
+
+    ##2- decompositon of an arbitrary point in the hull
+    #print(phase_diagram.get_decomposition(Composition("Cu3BiS3Cl4")))
+     
+    ##3- decomposition of an arbitrary mixture of compositions
+    #comp1=Composition("Cu3BiS3")
+    #comp2=Composition("Cl2")
+    #mixed=comp1*0.33333 + comp2*0.66667
+    #print(phase_diagram.get_decomposition(mixed))
+    #----------------------------------------------------------------------------------------
+
 
     if INPUT["calculate_XRD"]:
         def call_simulate_xrd_on_df(df):

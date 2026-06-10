@@ -9,8 +9,6 @@ from chemformula import ChemFormula
 from IPSE_ML_CH_modules.data_for_ML import Data4ML
 from IPSE_ML_CH_modules.ML_fit_and_predict import ML_FitAndPredict
 from IPSE_ML_CH_modules.DB_functions import *
-import input_IPSE_ML as user_input
-import IPSE_ML_CH_modules.default_input_ML as defaults 
 
 def mongo_to_pandas(excluded_elements=None, elements_required_any=None,bandgap_filter=None,fields_to_consider=None,
         n_elements=None,other_filters=None,server_name=None,db_name=None,collection_name=None):
@@ -135,6 +133,8 @@ def features_analysis(ML_data_instance=None,filename_features_analysis="features
 
 
 if __name__== "__main__":
+    import input_IPSE_ML as user_input
+    import IPSE_ML_CH_modules.default_input_ML as defaults 
     t_start_data=datetime.datetime.now()
 
     INPUT = {k:v for k, v in vars(defaults).items()}

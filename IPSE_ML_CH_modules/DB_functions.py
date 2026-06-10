@@ -3,7 +3,7 @@
 import pandas as pd
 from pymongo import MongoClient
 import re
-from mendeleev import IonicRadius
+#from mendeleev.models import IonicRadius #shouldn't be needed
 from mendeleev.ion import Ion
 from mendeleev import element as mendeleev_element
 from chemformula import ChemFormula
