@@ -27,6 +27,13 @@ from pymatgen.io.vasp.outputs import Outcar, Vasprun
 from pymatgen.io.vasp.outputs import UnconvergedVASPWarning #used to avoid printing warning messages...
 
 
+def outcar_has_normal_end(outcar_path: Path) -> bool:
+    try:
+        tail = outcar_path.read_text(errors="ignore")[-20000:]
+        return "Voluntary context switches" in tail
+    except Exception:
+        return False
+
 def find_job_dirs(root: Path, max_depth: Optional[int] = None) -> List[Path]:
     """Find directories that look like VASP calculation folders."""
     job_dirs = []
@@ -163,6 +170,11 @@ def check_job(job_dir: Path, de_threshold: float) -> Tuple[str, List[str]]:
 
     if not messages:
         messages.append("note: insufficient information to determine full status")
+
+    if not outcar_has_normal_end(outcar_path):
+        messages.append(
+        "serious issue: OUTCAR has no normal VASP end marker; job may still be running or was killed abruptly"
+        )   
 
     return str(job_dir), deduplicate(messages)
 
