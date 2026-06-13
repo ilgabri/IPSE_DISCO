@@ -1,0 +1,6 @@
+database aflow
+ion_A Pb
+ion_B S,Cl 
+numspecies 2
+getstruct
+#key_pw "insert your materials project API key here, without quotes"

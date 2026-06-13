@@ -1,0 +1,7 @@
+database oqmd
+ion_A Pb
+ion_B S 
+ion_C Cl 
+numspecies 3
+getstruct
+#key_pw "insert your materials project API key here, without quotes"

@@ -1,0 +1,76 @@
++++++++++++++++++++++++++++++++++
++++++ Pb_S_Cl_fromdatabases +++++
++++++++++++++++++++++++++++++++++
+
+These examples retrieve from databases all compounds within the Pb-S-Cl phase diagram from 
+databases.
+(In the article Saleh, Manna "A Data-Driven Framework to Accelerate Semiconductor Discovery", 
+these runs were used to retrieve all structures to be used for DFT simulations to buils a 
+Pb-S-X phase diagram more accurate than that available in single databases)  
+The same procedure can be adopted to build Pb-S-Br or Pb-S-I phase diagrams by changing the name of 
+the halogen atom in the input files in all subfolders
+
+HOW TO RUN 
+(after having created and activated the IPSE_DB environment, see IPSE-DISCO manual):
+0  - register on the Materials Project (MP) website, since to run MP inputs you need to insert 
+     you own API key in the input file
+1  - copy in the folder where IPSE-DISCO will be run the folder IPSE_DB_modules and the
+     file IPSE_DB.py (from the GitHub repository main page)
+2  - launch with python IPSE_DB.py <input file name> [<output file name>]
+2b - optionally, the high-energy polymorphs can be excluded by running (linux synthax adopted 
+     here, excluding polymorphs lying more than 0.15 eV/atom above the structural ground state):
+
+     python filter_Eform.py -t 0.15 <name of the csv file created in step2> 
+     chmod 755 remove_unstable.sh
+     ./remove_unstable.sh
+     
+     note that filter_Eform.py can be found among the utilities of IPSE-DISCO, and 
+     remove_unstable.sh is created by the filter_Eform code  
+
+
+
+
++++++++++++++++++++++++++++++++++++++++++++++++++++
+++ ML-training_chalcohalides_oqmd_combo_features ++
++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+In this example, a ML model is trained on a dataset composed by all halides, chalcogenides
+and chalcohalides present in the oqmd database (see the Supporting Information of the article
+by Saleh&Manna mentioned above for details). 
+It adopts the best performing ML algorithm among those tested, namely Random Forest Regressor
+with 600 estimators, 50% features considered for the best split, and no bootstrap. 
+Feature analysis is also performed; to switch it off, change do_features_analysis=True 
+to do_features_analysis=False in the input file.
+
+HOW TO RUN
+1  - copy in the running folder the following directory 
+     and file from the IPSE-DISCO GitHub repository: 
+     IPSE_ML_CH_modules/ IPSE_ML_main.py
+2  - run with:
+     python IPSE_ML_main.py > out &
+
+
+
+
++++++++++++++++++++++++++++++++++++++++++++++
++++++ make_ConvexHull_from_database_and_ML ++
++++++++++++++++++++++++++++++++++++++++++++++
+
+In this example, the conex hull for Pb-S-Cl (but also for Pb-S-Br and Pb-S-I by substituting 
+the halogen name in input_IPSE_CH.py) are evaluated by combining data from the oqmd database
+and from the ML model 
+
+HOW TO RUN
+0  - copy here (by 'here' we mean the folder where the code is run) the following directory 
+     and two files from the IPSE-DISCO GitHub repository:
+     IPSE_ML_CH_modules/ IPSE_CH_main.py IPSE_ML_main.py  
+1  - copy here the two pkl files (scaler.pkl and ML_model.pkl) produced in the example 
+     ML-training_chalcohalides_oqmd_combo_features [these pkl are to reproduce the results
+     of the above mentioned article from Saleh&Manna, but clerly previosly trained ML model
+     can be adopted; in this case, also copy the file input_IPSE_ML.py adopted to make those 
+     pkl file]
+2  - run with:
+     python IPSE_CH_main.py  
+
+
+
