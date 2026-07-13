@@ -1,5 +1,4 @@
 name: IPSE_DB_env
-  name: DB
 channels:
   - conda-forge
 dependencies:

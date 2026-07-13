@@ -26,15 +26,10 @@ from typing import List, Optional, Tuple
 from pymatgen.io.vasp.outputs import Outcar, Vasprun
 from pymatgen.io.vasp.outputs import UnconvergedVASPWarning #used to avoid printing warning messages...
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def outcar_has_normal_end(outcar_path: Path, nbytes: int = 20000) -> bool:
+def outcar_has_normal_end(outcar_path: Path) -> bool:
     try:
-        with outcar_path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(size - nbytes, 0))
-            tail = f.read().decode(errors="ignore")
+        tail = outcar_path.read_text(errors="ignore")[-20000:]
         return "Voluntary context switches" in tail
     except Exception:
         return False
@@ -242,33 +237,15 @@ def main() -> None:
     print("=" * 80)
 
     results = []
-    
-    #with ProcessPoolExecutor() as executor:
-    with ProcessPoolExecutor(max_workers=16) as executor:
-        futures = {
-            executor.submit(check_job, job_dir, args.de_threshold): job_dir
-            for job_dir in job_dirs
-        }
-    
-        for future in as_completed(futures):
-            path_str, msgs = future.result()
-            results.append((path_str, msgs))
-    
-            for msg in msgs:
-                if msg != "OK":
-                    print(Path(path_str).name, "  ", msg)
+    for job_dir in job_dirs:
+        path_str, msgs = check_job(job_dir, args.de_threshold)
+        results.append((path_str, msgs))
 
-    ##older,serial one
-    #results = []
-    #for job_dir in job_dirs:
-    #    path_str, msgs = check_job(job_dir, args.de_threshold)
-    #    results.append((path_str, msgs))
-
-    #    #print(f"\n[{path_str}]")
-    #    for msg in msgs:
-    #        if msg!="OK":
-    #            print(path_str.split("/")[-int(args.max_depth)],"  ",msg)
-    #        #print(f"  - {msg}")
+        #print(f"\n[{path_str}]")
+        for msg in msgs:
+            if msg!="OK":
+                print(path_str.split("/")[-int(args.max_depth)],"  ",msg)
+            #print(f"  - {msg}")
 
     summarize(results)
 
