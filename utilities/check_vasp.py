@@ -6,7 +6,6 @@ For each directory, the script reports warnings if:
 - SCF did not converge
 - Structure optimization did not converge AND |deltaE| is below a threshold
 - Serious issues exist, based only on pymatgen-parsed failures / job state
-- as of 13mar26, it does NOT rise a waring/issue if the siimulation is still running
 
 Usage
 -----
@@ -39,8 +38,10 @@ def outcar_has_normal_end(outcar_path: Path, nbytes: int = 20000) -> bool:
     except Exception:
         return False
 
+
+
 def find_job_dirs(root: Path, max_depth: Optional[int] = None) -> List[Path]:
-    """Find directories that look like VASP calculation folders."""
+    """Find directories that look like intended VASP calculation folders."""
     job_dirs = []
     root = root.resolve()
 
@@ -53,10 +54,40 @@ def find_job_dirs(root: Path, max_depth: Optional[int] = None) -> List[Path]:
             continue
 
         files = set(filenames)
-        if "vasprun.xml" in files or "OUTCAR" in files:
+
+        # Treat a directory as a VASP job if it contains input or output files.
+        vasp_markers = {
+            "INCAR",
+            "POSCAR",
+            "POTCAR",
+            "KPOINTS",
+            "vasprun.xml",
+            "OUTCAR",
+        }
+
+        if files.intersection(vasp_markers):
             job_dirs.append(current)
 
     return sorted(job_dirs)
+##older: this did not detect a folder where no vasp was ran
+#def find_job_dirs(root: Path, max_depth: Optional[int] = None) -> List[Path]:
+#    """Find directories that look like VASP calculation folders."""
+#    job_dirs = []
+#    root = root.resolve()
+#
+#    for dirpath, dirnames, filenames in os.walk(root):
+#        current = Path(dirpath)
+#        depth = len(current.relative_to(root).parts)
+#
+#        if max_depth is not None and depth > max_depth:
+#            dirnames[:] = []
+#            continue
+#
+#        files = set(filenames)
+#        if "vasprun.xml" in files or "OUTCAR" in files:
+#            job_dirs.append(current)
+#
+#    return sorted(job_dirs)
 
 
 def deduplicate(items: List[str]) -> List[str]:
@@ -244,7 +275,7 @@ def main() -> None:
     results = []
     
     #with ProcessPoolExecutor() as executor:
-    with ProcessPoolExecutor(max_workers=16) as executor:
+    with ProcessPoolExecutor(max_workers=32) as executor:
         futures = {
             executor.submit(check_job, job_dir, args.de_threshold): job_dir
             for job_dir in job_dirs

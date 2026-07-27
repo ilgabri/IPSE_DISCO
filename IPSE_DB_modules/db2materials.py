@@ -4,6 +4,7 @@ from IPSE_DB_modules.MP_funct import *
 from IPSE_DB_modules.oqmd_funct import  *
 import requests
 import sys
+import time
 
 
 
@@ -76,11 +77,15 @@ def database_to_materialslist(input_object,structure_labelling_formula=True):
         endpoint=f'{base_url}/entries/archive/query'
         json_main={'query': {"and":querylist},'pagination': {'page_size': input_object.pagsize}}
         for i in range(1,input_object.npages+1):
-            sys.stdout.flush()
+            if i > 1: time.sleep(6)
             response = requests.post(endpoint,json=json_main)
-            sys.stdout.flush()
-            if not response:
-                print("PROBLEM! no data for results: ",(i-1)*input_object.pagsize," - ",i*input_object.pagsize-1)#0-based numeration used here; this is for get. Does it work also for post?
+            #if not response:
+            if not response.ok:
+                #print("PROBLEM! no data for results: ",(i-1)*input_object.pagsize," - ",i*input_object.pagsize-1)#0-based numeration used here; this is for get. Does it work also for post?
+                #cgt suggested change:
+                print("NOMAD HTTP ERROR, status",response.status_code, "url:", endpoint,"page:", i,"payload:", json_main)
+                print("response--> ", response.text[:1000])
+                sys.stdout.flush()
                 continue
             response_json = response.json()
             #data_all.extend(response_json['data']) #try this instead of the loop below!
@@ -151,7 +156,10 @@ def database_to_materialslist(input_object,structure_labelling_formula=True):
                     materlist.append(material)
                 ntot+=len(docs)
     elif input_object.database=="oqmd":
+        #GS tmp
+        print("pages, size",input_object.npages,input_object.pagsize)
         import qmpy_rester as qr
+        n_attempts=4
         ###preparing the query parameters#######################################################
         query_requirements = {}
         elements_string=oqmd_species_string(*ionlist)
@@ -193,19 +201,21 @@ def database_to_materialslist(input_object,structure_labelling_formula=True):
             for i in range(1,input_object.npages+1):
                 offset=(i-1)*input_object.pagsize
                 query_requirements['offset']=offset
-                try:
-                    list_of_data = query.get_oqmd_phases(verbose=False,**query_requirements)
-                    print("done page ",i,"results: ",len(list_of_data['data']))
-                    #print("limit,offset",query_requirements['limit'],query_requirements['offset'])
-                    #print(query_requirements)
-                    #for nc,comp in enumerate(list_of_data['data']):
-                    #    print(i,nc,comp['name'])
-                    #    #for nc,comp2 in enumerate(comp):
-                    #    #    print(nc,comp2.name)
-                    sys.stdout.flush() #GS tmp
-                except:
-                    print("could not get list of data, page: ",i)
-                    sys.stdout.flush() #GS tmp
+                list_of_data = None
+                for trial in range(1,n_attempts+1):
+                    try:
+                        list_of_data = query.get_oqmd_phases(verbose=False, **query_requirements)
+                        print("done page ", i, "results: ", len(list_of_data["data"]))
+                        break
+                    except Exception as exc:
+                        print("OQMD ERROR , attempt",trial,"page:", i,"query_requirements:", query_requirements)
+                        print("exception:", repr(exc))
+                        sys.stdout.flush()
+                        time.sleep(6)
+                else:
+                    break
+                if not list_of_data or "data" not in list_of_data:
+                    break
                 try:
                     if not list_of_data['data']: 
                         print("no more data, results:",offset," - ",offset+input_object.pagsize)
