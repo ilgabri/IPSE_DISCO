@@ -23,7 +23,7 @@ cations.extend(["Al","Ga","In","Tl"])
 cations.extend(["Sn","Pb","Sb","Bi"])
 
 
-file_name_data_fitting= "oqmd_chalcohal_rhof"
+file_name_data_fitting= "oqmd_chalcohalides_rho1_filtered.csv"
 
 
 validation=False
@@ -48,5 +48,5 @@ validate_with_impo_feats=False
 shapley_feature_importance=False
 try_features_combination=False
 threshold_important_features= None
-ML_algorithms=["PICK_RF_ne600_mf0.5_bsFalse"]
+ML_algorithms=["PICK_ETs_def"]
 

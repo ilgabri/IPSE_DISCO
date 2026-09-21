@@ -37,8 +37,7 @@ HOW TO RUN
 In this example, a ML model is trained on a dataset composed by all halides, chalcogenides
 and chalcohalides present in the oqmd database (see the Supporting Information of the article
 by Saleh&Manna mentioned above for details). 
-It adopts the best performing ML algorithm among those tested, namely Random Forest Regressor
-with 600 estimators, 50% features considered for the best split, and no bootstrap. 
+It adopts the best performing ML algorithm among those tested, namely ExtraTreesRegressor with default hyperpara,eters
 Feature analysis is also performed; to switch it off, change do_features_analysis=True 
 to do_features_analysis=False in the input file.
 
@@ -56,9 +55,8 @@ HOW TO RUN
 +++++ make_ConvexHull_from_database_and_ML ++
 +++++++++++++++++++++++++++++++++++++++++++++
 
-In this example, the conex hull for Pb-S-Cl (but also for Pb-S-Br and Pb-S-I by substituting 
-the halogen name in input_IPSE_CH.py) are evaluated by combining data from the oqmd database
-and from the ML model 
+In this example, the conex hull for Pb-S-Cl is evaluated by combining data from the 
+oqmd database and from the ML model 
 
 HOW TO RUN
 0  - copy here (by 'here' we mean the folder where the code is run) the following directory 

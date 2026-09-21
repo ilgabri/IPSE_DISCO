@@ -21,7 +21,6 @@ compounds4ML=[] #to evaluate specific compounds. Example: ["Sn1Sb5S9I1","Sn1Sb3S
 
 max_elements_composition=10 #either one number of a list as long as the numberof elements of the convex hull or none
 use_features_subset=False #whether to use only a subset of features (defined by features_subset_file, typically "impo_feats.txt") in ML for CH
-features_subset_file="impo_feats.txt"
 include_ML_in_CH=True #if False, the stability of compounds evlauated with ML is evaluated but the compounds are not used to build the CH
 charge_neutral_only=True #check for charge neutrality (it has to be in features!) and exclude non-charge neutrals from ML predictions
 
@@ -29,7 +28,10 @@ ncpus_features=1
 
 
 #file options
-compounds_files=["oqmd_chalcohal_rhof.csv","bin2_oqmd.csv"] #file(s) where compounds and Eform are read from, can be csv or text (can be a list of files!)
+
+#file(s) where compounds and Eform are read from, can be csv or text (can be a list of files!)
+#bin2_oqmd.csv incudes S-Cl compounds that are not in the original training set list, as they are both 'anions' (see Saleh, Manna, 2026)
+compounds_files=["oqmd_chalcohalides_rho1_filtered.csv","bin2_oqmd.csv"] 
 file_has_header=True
 column_compound=1
 column_E=2

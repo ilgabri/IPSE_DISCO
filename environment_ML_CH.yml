@@ -1,4 +1,4 @@
-name: IPSE_ML_CH_env
+name: IPSE_ML_CH
 channels:
   - conda-forge
 dependencies:
@@ -15,7 +15,7 @@ dependencies:
 
   # Chemistry / materials
   - pymatgen
-  - matminer
+  - matminer==0.10.1
   - mendeleev
   - periodictable
   - smact
@@ -23,6 +23,7 @@ dependencies:
   # Database / utils
   - pymongo
   - requests
+  - setuptools<82
 
   # Ensure pip available
   - pip
