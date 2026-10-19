@@ -19,6 +19,9 @@ env/
 changes_and_notes.log
 utilities/not_shared/
 
+#datatsets...
+datasets
+
 #  # Distribution / packaging
 #  
 #  build/

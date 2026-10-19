@@ -11,6 +11,7 @@ elemental_energies= {}
 input_totalE=False
 print_unstable=True
 threshold_instability=0.05
+# 2026-10-19: Plot entries up to this energy above hull (eV/atom); None shows all.
 threshold_instability_plot=None
 exclude_polymorphs=True
 

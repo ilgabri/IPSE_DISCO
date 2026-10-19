@@ -54,7 +54,7 @@ fitting=True
 validation=True
 fraction_validation=0.05 #fraction of data to be used for validation, remaining data are used for training/test
 
-ML_algorithms=["ETs"]#which ML algorithms. Options:
+ML_algorithms=["ETs_def"]#which ML algorithms. Options:
 n_test_train_splits=5
 
 #kinda advanced ML settings

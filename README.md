@@ -232,6 +232,41 @@ These representations can be used individually or combined.
 
 ---
 
+<!-- 2026-10-14: Document optional metadata, legacy loading, and descriptor compatibility. -->
+## Saved Model Feature Metadata
+
+New models trained through `IPSE_ML_main.py` retain the existing estimator and
+scaler pickle files and also save an optional sidecar, such as
+`ML_model.metadata.json`. Extended models receive their own sidecar.
+
+The sidecar records feature settings, stable feature identifiers in training
+order, selected feature-combination expressions, atomic-property and matminer
+value snapshots, descriptor revisions, training-library versions, and hashes
+of the matching model and scaler files. Validation and convex-hull prediction
+read these settings before calculating features; input configuration files are
+not rewritten. Saved feature subsets and combinations are reconstructed without
+requiring the original feature-label list.
+
+Feature display labels can change without changing their stable identifiers.
+Metadata-aware prediction restores training order and ignores extra features.
+For direct Python calls, `features_frame(data_for_ml)` carries the identifiers;
+raw NumPy arrays must already have the correct training column order.
+
+Existing pickle files without a sidecar continue using the supplied feature
+settings and separate scaler. Their original feature definitions cannot be
+inferred automatically. Python callers of `ML_fitting` can opt into sidecars by
+passing `feature_metadata=build_metadata(data_for_ml, config)` alongside
+`file_model` and `file_scaler` (helpers are in `feature_metadata.py`).
+
+When changing the numerical definition of an existing descriptor, update its
+revision in `DESCRIPTOR_VERSIONS` and retrain, or retain the matching historical
+implementation. Cosmetic label changes do not require a revision change.
+Unsupported descriptor revisions and mismatched model/scaler hashes are rejected.
+Recorded library versions help reproduce the training environment; metadata does
+not guarantee pickle compatibility across library versions.
+
+---
+
 ## MongoDB Integration
 
 IPSE-DISCO supports both:

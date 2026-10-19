@@ -9,6 +9,8 @@ from chemformula import ChemFormula
 from IPSE_ML_CH_modules.data_for_ML import Data4ML
 from IPSE_ML_CH_modules.ML_fit_and_predict import ML_FitAndPredict
 from IPSE_ML_CH_modules.DB_functions import *
+# 2026-10-14: Save/load optional feature metadata before featurizing prediction inputs.
+from IPSE_ML_CH_modules.feature_metadata import build_metadata, load_metadata, restore_feature_data, features_frame
 
 def mongo_to_pandas(excluded_elements=None, elements_required_any=None,bandgap_filter=None,fields_to_consider=None,
         n_elements=None,other_filters=None,server_name=None,db_name=None,collection_name=None):
@@ -96,13 +98,19 @@ def features_analysis(ML_data_instance=None,filename_features_analysis="features
     #feature_labels=data_for_ml.feature_labels
     #df_features=pd.DataFrame(data_for_ml.features, columns=feature_labels)
     feature_labels=ML_data_instance.feature_labels
-    df_features=pd.DataFrame(ML_data_instance.features, columns=feature_labels)
+    # 2026-10-14: Carry stable feature IDs through importance-based selection.
+    # GS: before the df was created directly here; features_frame creates a df
+    # with more stable [...] feature labels, created through feature_ids function 
+    df_features=features_frame(ML_data_instance)
 
     if importance or threshold_importance_features: 
         df_most_important_features = ML_predictor.features_importance(features_matrix=ML_data_instance.features,
                 targets=ML_data_instance.target,output_file_name=filename_features_analysis,file_action="w",
                 feature_labels=feature_labels,n_jobs=n_jobs,return_features_threshold=threshold_importance_features,
                 do_shap=INPUT["shapley_feature_importance"],do_drop_column=INPUT["dropcolumn_feature_importance"]) #TO BE CHANGED (using INPUT inside a function)
+        # 2026-10-14: Importance selection preserves IDs independently of selected labels.
+        if df_most_important_features is not None:
+            df_most_important_features.attrs.update(df_features.attrs)
         if threshold_importance_features and file_export_feats:
             with open(file_export_feats, 'w') as f:
                 f.write('\n'.join(df_most_important_features.columns))
@@ -155,6 +163,10 @@ if __name__== "__main__":
             fraction_fitting=1.0-INPUT["fraction_validation"]
             if not INPUT["validation"]:
                 print("WARNING: fraction of data assigned to validation but validation not requested")
+        # 2026-10-14: Validation-only Mongo runs may use all fetched rows without a split.
+        # GS: this is probably in the rare case one does prediction dirently on mongo?
+        elif INPUT["validation"] and not INPUT["fitting"] and not INPUT["skipML"]:
+            fraction_fitting=0.0
         else:
             fraction_fitting=1.0
             if INPUT["validation"]:
@@ -191,17 +203,26 @@ if __name__== "__main__":
 
 
     
-    data_for_ml=Data4ML(INPUT["options_ML_styles"])
-    data_for_ml.read_data_from_database(source_type=source_data_type,data4feat_columns='formula',source=source_data_fitting,target_column='Eform')
-    if INPUT["validation"]:
+    # 2026-10-15: Load data for requested ML work or MongoDB-only processing;
+    # skipping both ML and MongoDB must not read either CSV.
+    needs_fitting_data = (INPUT["fitting"] and not INPUT["skipML"]) or (INPUT["skipML"] and not INPUT["skipDB"])
+    needs_validation_data = INPUT["validation"] and (not INPUT["skipML"] or not INPUT["skipDB"])
+    if needs_fitting_data:
+        data_for_ml=Data4ML(INPUT["options_ML_styles"])
+        data_for_ml.read_data_from_database(source_type=source_data_type,data4feat_columns='formula',source=source_data_fitting,target_column='Eform')
+    if needs_validation_data:
         data_for_ml_validation=Data4ML(INPUT["options_ML_styles"])
         data_for_ml_validation.read_data_from_database(source_type=source_data_type,data4feat_columns='formula',source=source_data_validation,target_column='Eform')
 
 
 
     if not INPUT["skipDB"] and INPUT["save_mongo_to_csv"]:
-        data_for_ml.save_database(target_name='Eform',file_name=INPUT["file_name_data_fitting"])
-        if INPUT["validation"]: data_for_ml_validation.save_database(target_name='Eform',file_name=INPUT["file_name_data_validation"])
+        # 2026-10-14: Export fitting data only when it was requested and loaded.
+        if needs_fitting_data:
+            data_for_ml.save_database(target_name='Eform',file_name=INPUT["file_name_data_fitting"])
+        # 2026-10-15: Export validation data only when it was actually loaded.
+        if needs_validation_data:
+            data_for_ml_validation.save_database(target_name='Eform',file_name=INPUT["file_name_data_validation"])
     t_end_data=datetime.datetime.now()
     print("t data: ",(t_end_data - t_start_data).total_seconds())
     
@@ -211,17 +232,20 @@ if __name__== "__main__":
             data_for_ml.get_atomic_data(properties_groups=INPUT["styles_atomic_data"],excluded_elements=INPUT["excluded_elements"])
             data_for_ml.calculate_formula_features(INPUT["anions"],styles=INPUT["styles_ML_features"],ncore=INPUT["ncpus_features"])
             print("number of features: ",len(data_for_ml.features[0]))
-            if INPUT["validation"]:
-                data_for_ml_validation.get_atomic_data(properties_groups=INPUT["styles_atomic_data"],excluded_elements=INPUT["excluded_elements"])
-                data_for_ml_validation.calculate_formula_features(INPUT["anions"],styles=INPUT["styles_ML_features"],ncore=INPUT["ncpus_features"],get_also_labels=True)
-            t_end_feat=datetime.datetime.now()
-            print("t feat: ",(t_end_feat - t_start_feat).total_seconds())
-    
-            t_start_ML=datetime.datetime.now()
-            ML_predictor=ML_FitAndPredict(n_core_ML=INPUT["ncpus_ML_algo"],ML_algorithms=INPUT["ML_algorithms"])
-            print("t to instantiate ML algos: ",(datetime.datetime.now() - t_start_ML).total_seconds())
+        # 2026-10-14: Validation featurization waits until the selected model metadata is loaded.
+        t_end_feat=datetime.datetime.now()
+        print("t feat: ",(t_end_feat - t_start_feat).total_seconds())
+
+        # 2026-10-14: Initialize prediction and timing even when loading existing models only.
+        t_start_ML=datetime.datetime.now()
+        ML_predictor=ML_FitAndPredict(n_core_ML=INPUT["ncpus_ML_algo"],
+                ML_algorithms=INPUT["ML_algorithms"] if INPUT["fitting"] else [])
+        print("t to instantiate ML algos: ",(datetime.datetime.now() - t_start_ML).total_seconds())
+        if INPUT["fitting"]:
+            # 2026-10-14: New trained models save their feature definitions beside the pickle (GS: feature_metadata= was added to ML_fitting).
             ML_predictor.ML_fitting(features_matrix=data_for_ml.features,targets=data_for_ml.target,n_test_train_splits=INPUT["n_test_train_splits"],n_jobs_TT=INPUT["ncpus_cv_traintest"],
-                    data_labels=data_for_ml.initial_data['formula'].to_list(),print_predictedVStrue=True,file_model='ML_model.pkl',file_scaler='scaler.pkl')
+                    data_labels=data_for_ml.initial_data['formula'].to_list(),print_predictedVStrue=True,file_model='ML_model.pkl',file_scaler='scaler.pkl',
+                    feature_metadata=build_metadata(data_for_ml,INPUT))
             t_end_fit=datetime.datetime.now()
             print("t ML fit: ",(t_end_fit - t_start_ML).total_seconds())
             if INPUT["do_features_analysis"] and not INPUT["try_features_combination"]: 
@@ -244,19 +268,36 @@ if __name__== "__main__":
 
                 ML_predictor.ML_fitting(features_matrix=extended_features,targets=data_for_ml.target,n_test_train_splits=INPUT["n_test_train_splits"],n_jobs_TT=INPUT["ncpus_cv_traintest"],
                     data_labels=data_for_ml.initial_data['formula'].to_list(),print_predictedVStrue=True,file_model='ML_model_extended.pkl',file_scaler='scaler_extended.pkl',
-                    file_name_statistics='fitting_extended.log',file_name_predictedVStrue='predictedVStrue_extended.log')
+                    file_name_statistics='fitting_extended.log',file_name_predictedVStrue='predictedVStrue_extended.log',
+                    # 2026-10-14: Extended models store their selected columns and expressions 
+                    # GS: note the line below is still part of the ML_fitting parenthesis
+                    feature_metadata=build_metadata(data_for_ml,INPUT,extended_features))
                 t_end_featcombo=datetime.datetime.now()
                 print("done fitting with extended features (and possibly feature analysis)")
                 print("t features combination and re-fit fit: ",(t_end_featcombo - t_start_featcombo).total_seconds())
 
-        if INPUT["validation"]: 
-            if INPUT["validate_with_impo_feats"]:
+        if INPUT["validation"]:
+            # 2026-10-14: Saved settings/snapshots override only this prediction's featurization.
+            ML_model_validation = 'ML_model_extended.pkl' if INPUT["validate_with_impo_feats"] else 'ML_model.pkl'
+            scaler_validation = 'scaler_extended.pkl' if INPUT["validate_with_impo_feats"] else 'scaler.pkl'
+            validation_metadata = load_metadata(ML_model_validation,scaler_validation)
+            if validation_metadata is not None:
+                restore_feature_data(data_for_ml_validation,validation_metadata)
+                saved_settings = validation_metadata["settings"]
+                data_for_ml_validation.calculate_formula_features(saved_settings["anions"],
+                        styles=saved_settings["styles_ML_features"],ncore=INPUT["ncpus_features"])
+                features_for_validation = features_frame(data_for_ml_validation)
+                print("using saved feature metadata:",len(validation_metadata["features"]),"model features")
+            else:
+                data_for_ml_validation.get_atomic_data(properties_groups=INPUT["styles_atomic_data"],excluded_elements=INPUT["excluded_elements"])
+                data_for_ml_validation.calculate_formula_features(INPUT["anions"],styles=INPUT["styles_ML_features"],ncore=INPUT["ncpus_features"])
+            if validation_metadata is None and INPUT["validate_with_impo_feats"]:
                 features_for_validation=features_analysis(ML_data_instance=data_for_ml_validation,file_export_feats=INPUT["file_important_feats"],
                         importance=False,correlation=False,return_dataframe=True,n_jobs=1)
                 print("validating with subset of (important) features: ",len(features_for_validation.columns))
                 scaler_validation='scaler_extended.pkl'
                 ML_model_validation='ML_model_extended.pkl'
-            else:
+            elif validation_metadata is None:
                 features_for_validation=data_for_ml_validation.features
                 scaler_validation='scaler.pkl'
                 ML_model_validation='ML_model.pkl'

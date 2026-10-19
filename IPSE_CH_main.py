@@ -13,6 +13,8 @@ from functools import reduce
 from itertools import product,combinations
 from IPSE_ML_CH_modules.data_for_ML import Data4ML
 from IPSE_ML_CH_modules.ML_fit_and_predict import ML_FitAndPredict
+# 2026-10-14: Convex-hull predictions also restore saved feature settings and atomic data.
+from IPSE_ML_CH_modules.feature_metadata import load_metadata, restore_feature_data, features_frame
 from IPSE_ML_main import features_analysis,mongo_to_pandas
 import input_IPSE_CH as user_input
 import IPSE_ML_CH_modules.default_input_CH as defaults
@@ -269,33 +271,42 @@ if __name__== "__main__":
                 column_property=INPUT["column_E"],column_label=INPUT["column_label"],file_has_header=INPUT["file_has_header"])
         
     if "ML" in INPUT["data_types_CH"]:
-        #below lines to import the options about the ML model and store them into ML_options
-        try:
-            import input_IPSE_ML
-        except ImportError:
-            input_IPSE_ML = None
-            print("warning! input_IPSE_ML does not exist. Using only default options...")
-        try:
-            import IPSE_ML_CH_modules.default_input_ML
-        except ImportError:
-            print("ISSUE! no default_input_ML.py file here, the code may crash if ML is used for building the convex hull...")
-        #here the ML variable names are defined, then their value is fetched from either input_IPSE_ML or default_input_ML
+        # 2026-10-18: Load saved feature metadata first; import ML input/defaults only for legacy models.
         ML_options = ["options_ML_styles","styles_atomic_data","excluded_elements","anions","cations","styles_ML_features"]
-        for variable in ML_options:
-            if variable=="excluded_elements": continue #handled later 
+        ML_metadata = load_metadata(INPUT["ML_model_file"],INPUT["ML_scaler_file"])
+        if ML_metadata is not None:
+            # 2026-10-18: Report the actual JSON path and let incomplete metadata raise an error.
+            for variable in ML_options:
+                globals()[variable] = ML_metadata["settings"][variable]
+            print("ML settings restored from",
+                  Path(INPUT["ML_model_file"]).with_suffix(".metadata.json"))
+        else:
             try:
-                value = getattr(input_IPSE_ML, variable)
-            except (AttributeError, TypeError):
-                value = getattr(IPSE_ML_CH_modules.default_input_ML, variable)
-            globals()[variable] = value
-    
-        #exlcuded_elements handled separately, once cations and anions are read
-        try:
-            excluded_elements = getattr(default_input_ML,"excluded_elements")
-        except:
-            from periodictable import elements as pt_elements
-            excluded_elements = [pt_elements[z].symbol for z in range(1,104) if
-            not any (pt_elements[z].symbol in ion for ion in [cations,anions])]
+                import input_IPSE_ML
+            except ImportError:
+                input_IPSE_ML = None
+                print("WARNING! No json metadata file or input_IPSE_ML. Using only default options...")
+            try:
+                import IPSE_ML_CH_modules.default_input_ML
+            except ImportError:
+                print("ISSUE! no default_input_ML.py file here, the code may crash if ML is used for building the convex hull...")
+            #here the ML variable names are defined, then their value is fetched from either input_IPSE_ML or default_input_ML
+            for variable in ML_options:
+                if variable=="excluded_elements": continue #handled later
+                try:
+                    value = getattr(input_IPSE_ML, variable)
+                except (AttributeError, TypeError):
+                    value = getattr(IPSE_ML_CH_modules.default_input_ML, variable)
+                globals()[variable] = value
+
+            #exlcuded_elements handled separately, once cations and anions are read
+            try:
+                excluded_elements = getattr(default_input_ML,"excluded_elements")
+            except:
+                from periodictable import elements as pt_elements
+                excluded_elements = [pt_elements[z].symbol for z in range(1,104) if
+                not any (pt_elements[z].symbol in ion for ion in [cations,anions])]
+
 
         formulas_to_evaluate=[]
         if INPUT["max_elements_composition"]: 
@@ -323,11 +334,18 @@ if __name__== "__main__":
 
         data_for_ml=Data4ML(options_ML_styles)
         data_for_ml.initial_data=pd.DataFrame({'formula':formulas_to_evaluate})
-        data_for_ml.get_atomic_data(properties_groups=styles_atomic_data,excluded_elements=excluded_elements)
+        # 2026-10-14: Restore atomic snapshots; models without metadata use the legacy settings.
+        if ML_metadata is not None:
+            restore_feature_data(data_for_ml,ML_metadata)
+        else:
+            data_for_ml.get_atomic_data(properties_groups=styles_atomic_data,excluded_elements=excluded_elements)
         data_for_ml.calculate_formula_features(anions,styles=styles_ML_features,ncore=INPUT["ncpus_features"])
         ML_predictor=ML_FitAndPredict()
 
-        if INPUT["use_features_subset"]: #to use only a subset of features provided in features_subset_file, typically only most important features
+        # 2026-10-14: Metadata selects/reconstructs features automatically after charge filtering.
+        if ML_metadata is not None:
+            features_df = features_frame(data_for_ml)
+        elif INPUT["use_features_subset"]: #to use only a subset of features provided in features_subset_file, typically only most important features
             with open(INPUT["features_subset_file"], 'r') as f:
                 important_feature_names = f.read().splitlines()
             features_df_untrimmed=features_analysis(ML_data_instance=data_for_ml,filename_features_analysis=None,importance=False,correlation=False,return_dataframe=True,n_jobs=1)
@@ -343,13 +361,23 @@ if __name__== "__main__":
 
         if INPUT["charge_neutral_only"]: #filter out compounds not fulfilling charge neutrality
             formal_charge_column_names=['min_form_charge','min_form_charge_neg','min_form_charge_pos','min_form_charge_truecatan']
+            # 2026-10-14: Charge filtering follows stable definitions even if labels were renamed.
+            if ML_metadata is not None:
+                charge_ids = ["ID2.charge." + kind for kind in
+                              ["unrestricted","negative_anions","positive_cations","cation_anion"]]
+                identities = features_df.attrs["feature_ids"]
+                formal_charge_column_names = [
+                    next((label for label, identifier in identities.items() if identifier == wanted), fallback)
+                    for wanted, fallback in zip(charge_ids, formal_charge_column_names)]
             print("number of compounds before charge neutrality filter:",len(features_df.index),len(formulas_to_evaluate)) #GS tmp
             features_df['formula']=formulas_to_evaluate #this gives warning (?)
 
             for prop in formal_charge_column_names:
                 try:
                     #features_df = features_df[features_df[prop] == 0] #but I want to keep the user-derined formulas, so:
-                    features_df = features_df[(features_df[prop] == 0) | (features_df['formula'].isin(INPUT["compounds4ML"])) ]
+                    #features_df = features_df[(features_df[prop] == 0) | (features_df['formula'].isin(INPUT["compounds4ML"])) ]
+                    max_charge = 0 #preparing to make this an input variable
+                    features_df = features_df[(abs(features_df[prop]) <= max_charge) | (features_df['formula'].isin(INPUT["compounds4ML"])) ]
                 except:
                     print("WARNING! charge neutrality on ",prop," could not be enforced as it is not among features")
             formulas_to_evaluate=features_df['formula'].tolist()
@@ -492,15 +520,13 @@ if __name__== "__main__":
                     f.write(compounds_not_in_CH_df[['name',"phase separation E","Eform per atom","label","reduced_formula"]].to_string())
 
     if INPUT["plot_CH"] or INPUT["save_CH"]: 
-        threshold_instability=INPUT["threshold_instability_plot"] 
-        if threshold_instability is not None:
-            filtered_entries = [e for e in compounds4PD if phase_diagram.get_e_above_hull(e) <= threshold_instability]
-            filtered_pd=PhaseDiagram(entries=filtered_entries)
-            plotter = PDPlotter(filtered_pd,ternary_style="3d")
-            CH_figure=plotter.get_plot()
-        else:
-            plotter = PDPlotter(phase_diagram,ternary_style="3d")
-            CH_figure=plotter.get_plot()
+        # 2026-10-19: Apply the plotting cutoff directly; None shows all energies above hull.
+        threshold_instability = INPUT["threshold_instability_plot"]
+        plotter = PDPlotter(
+            phase_diagram, ternary_style="3d",
+            show_unstable=float("inf") if threshold_instability is None else threshold_instability,
+        )
+        CH_figure = plotter.get_plot()
 
     if INPUT["plot_CH"]: 
         #to modify markers:

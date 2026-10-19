@@ -50,6 +50,9 @@ class Data4ML:
         self.atomic_properties=None
         self.features_options=copy.deepcopy(features_options)
         self.feature_labels=[]
+        # 2026-10-14: Feature identities and saved elemental tables are separate from labels.
+        self.feature_ids=[] #will be filled with the namesake function in feature_metadata
+        self.matminer_snapshot=None
         self.features=None
         self.target=None
     def read_data_from_database(self,source_type='pandas',source=None,data4feat=True,
@@ -160,6 +163,9 @@ class Data4ML:
             self.atomic_properties["oxistates"]=self.atomic_properties["oxistates"].apply(ast.literal_eval) #cause ox states are read as string
             #this is a patch for an inelegant solution for multiple props (IE only for now) adopted below (to be updated if atomic properties change)...
             if "ID1" in self.features_options:
+                if 'en_allen' in self.features_options["ID1"]:
+                    self.atomic_properties.loc[self.atomic_properties['element']=='La','en_allen']=1.0  #cgt suggested it from: Rahm Zeng Hoffmann JACS 2019
+                    self.atomic_properties.loc[self.atomic_properties['element']=='Tl','en_allen']=1.789 #from wiki
                 if 'ionization_energy' in self.features_options["ID1"]:
                     #print("there is IE") #GS tmp
                     self.features_options["ID1"].remove('ionization_energy')
@@ -195,6 +201,10 @@ class Data4ML:
                         mendeleev_prop_to_df('metallic_radius_c12')
                         self.atomic_properties.loc[self.atomic_properties['element']=='O','metallic_radius_c12']=73
                         self.atomic_properties.loc[self.atomic_properties['element']=='F','metallic_radius_c12']=71
+                    if prop=='en_allen': 
+                        mendeleev_prop_to_df('en_allen')
+                        self.atomic_properties.loc[self.atomic_properties['element']=='La','en_allen']=1.0  #cgt suggested it from: Rahm Zeng Hoffmann JACS 2019
+                        self.atomic_properties.loc[self.atomic_properties['element']=='Tl','en_allen']=1.789 #from wiki
                     elif prop=='e_affinity': 
                         props=[]
                         #line below https://en.wikipedia.org/wiki/Electron_affinity_(data_page) in eV, other elements match with Mendeleev
@@ -281,6 +291,9 @@ class Data4ML:
             4- atomic orbital properties + positions in periodic table
         get_also_label (bool): calls feature calculation but only to get the labels
         """
+        # 2026-10-14: Recalculation replaces labels/identities rather than appending old ones.
+        self.feature_labels=[]
+        self.feature_ids=[]
         if not styles: print("style not defined in calculate_formula_features",file=sys.stderr)
         for style in styles:
             if style not in self.features_options:
@@ -322,14 +335,16 @@ class Data4ML:
             if get_also_labels: self.feature_labels.extend(features_from_formula("no formula, labels only",styles,elements_index,properties_for_statistics,
                     self.atomic_properties,anion_elements,oxidation_states,feat_names_only=True,style_options=self.features_options))
 
+        # 2026-10-14: Saved elemental tables feed both feature values and label generation.
+        # GS: i.e. added snapshot= to get_formula_features_matminer
         if "matminer" in styles or "pnorm" in styles:
             wpnorm=True if "pnorm" in styles else False
             #next line is to get pnorm feats w/o matminer feats when calling "get_formula_features_matminer"
             matminer_styles=self.features_options["matminer"] if "matminer" in styles else None 
-            features_matminer=get_formula_features_matminer(formulas,features_style=matminer_styles,wpnorm=wpnorm,njobs=ncore)
+            features_matminer=get_formula_features_matminer(formulas,features_style=matminer_styles,wpnorm=wpnorm,njobs=ncore,snapshot=self.matminer_snapshot)
             features_all_types.append(features_matminer)
             if get_also_labels: self.feature_labels.extend(get_formula_features_matminer([],
-                features_style=matminer_styles,wpnorm=wpnorm,njobs=ncore,feat_names_only=True))
+                features_style=matminer_styles,wpnorm=wpnorm,njobs=ncore,feat_names_only=True,snapshot=self.matminer_snapshot))
 
         if len(features_all_types)==1:
             self.features=features_all_types[0].copy()
@@ -338,6 +353,12 @@ class Data4ML:
             del features_all_types
         elif len(features_all_types)>2:
             print("MORE THAN 2 TYPES OF FEATURES NOT IMPLEMENTED YET (it should just take few lines in data_for_ML.py")
+
+        # 2026-10-14: Stable identities come from descriptor definitions, never display labels.
+        from IPSE_ML_CH_modules.feature_metadata import feature_ids
+        self.feature_ids=feature_ids(styles,self.features_options,self.matminer_snapshot)
+        if self.features and len(self.feature_ids) != len(self.features[0]):
+            raise ValueError("Feature definitions do not match the calculated feature count")
 
         #PATCH TO KEEP ONLY CERTAIN FEATURES, typically resulting from feature importance analysis
         #features_to_keep=[6,60,37,30,8,0,65,54,36,61,2,56,64,51,53,7,32,31,9,18,11,71,21,48,20]

@@ -102,13 +102,31 @@ def features_from_formula(formula,feature_types,elements_index,properties_for_st
     else:
         return feat_list
 
-def get_formula_features_matminer(formulas,features_style,wpnorm=False,njobs=1,feat_names_only=False):
+# 2026-10-14: Reuse saved elemental values and feature definitions when metadata is present.
+def get_formula_features_matminer(formulas,features_style,wpnorm=False,njobs=1,feat_names_only=False,snapshot=None):
     from matminer.featurizers.composition import ElementProperty
     from matminer.featurizers.conversions import StrToComposition
     from IPSE_ML_CH_modules.hide_print import HiddenErr
-    #from hide_print import HiddenPrints
-    #with HiddenPrints():
-    #print("CALLING MATMINER FEATS, labels:",feat_names_only)
+    # 2026-10-14: Restore numerical definitions while keeping labels independently editable.
+    def restore_snapshot(featurizer): #featurizer is a (instance of) a matminer object
+        if snapshot and snapshot.get("matminer"): #if there is snapshot dict (created by feature_metadata.build_metadata) and has a matminer key
+            # 2026-10-14: Use a picklable label callable in parallel featurization.
+            from functools import partial
+            from IPSE_ML_CH_modules.feature_metadata import FrozenElementData, fixed_feature_labels
+            saved = snapshot["matminer"]
+            featurizer.features = saved["properties"]
+            featurizer.stats = saved["stats"]
+            labels = featurizer.feature_labels()
+            featurizer.data_source = FrozenElementData(saved["values"])
+            featurizer.feature_labels = partial(fixed_feature_labels, labels)
+        return featurizer
+
+    def stoichiometry():
+        from matminer.featurizers.composition import Stoichiometry
+        if snapshot and snapshot.get("pnorm"):
+            return Stoichiometry(p_list=snapshot["pnorm"]["p_list"])
+        return Stoichiometry()
+
     if feat_names_only: 
         feat_names=[]
         #print("matminer called for feat names...",len(feat_names)) #GS tmp
@@ -116,12 +134,11 @@ def get_formula_features_matminer(formulas,features_style,wpnorm=False,njobs=1,f
             df = pd.DataFrame({'formulas':["LiF"]})
             df = StrToComposition().featurize_dataframe(df, "formulas")
             if features_style:
-                featurizer = ElementProperty.from_preset(preset_name=features_style,impute_nan=True)
+                featurizer = restore_snapshot(ElementProperty.from_preset(preset_name=features_style,impute_nan=True))
                 featurizer.set_n_jobs(1)
                 df = featurizer.featurize_dataframe(df, col_id="composition")
             if wpnorm:
-                from matminer.featurizers.composition import Stoichiometry
-                featurizer_pnorms=Stoichiometry()
+                featurizer_pnorms=stoichiometry()
                 df = featurizer_pnorms.featurize_dataframe(df, col_id="composition")
             names=list(df.columns.values)
             feat_names.extend([n for n in names if n not in ['formulas', 'composition']])
@@ -131,13 +148,12 @@ def get_formula_features_matminer(formulas,features_style,wpnorm=False,njobs=1,f
             df = pd.DataFrame({'formulas':formulas})
             df = StrToComposition().featurize_dataframe(df, "formulas")
             if features_style:
-                featurizer = ElementProperty.from_preset(preset_name=features_style,impute_nan=True)
+                featurizer = restore_snapshot(ElementProperty.from_preset(preset_name=features_style,impute_nan=True))
                 featurizer.set_n_jobs(njobs)
                 featurizer.set_chunksize(100)
                 df = featurizer.featurize_dataframe(df, col_id="composition")
             if wpnorm:
-                from matminer.featurizers.composition import Stoichiometry
-                featurizer_pnorms=Stoichiometry()
+                featurizer_pnorms=stoichiometry()
                 df = featurizer_pnorms.featurize_dataframe(df, col_id="composition")
         df = df.drop(columns=['formulas', 'composition'])
         #from pymatgen.core import Composition
@@ -248,14 +264,15 @@ def atom_types_distribution(formula_dict,atomic_properties,elements_index,anion_
             n_cations+=natoms
             n_types_cat+=1
             if groups:
+                # 2026-10-14: Count each cation once; do not double the accumulated count.
                 if groups[elements_index[atom]].endswith("B"):
-                    n_TM+=n_TM+natoms
+                    n_TM+=natoms
                     n_types_TM+=1
                 elif groups[elements_index[atom]]=="IA" or groups[elements_index[atom]]=="IIA":
-                    n_alkali+=n_alkali+natoms
+                    n_alkali+=natoms
                     n_types_alkali+=1
                 elif groups[elements_index[atom]]=="IIIA" or groups[elements_index[atom]]=="IVA" or groups[elements_index[atom]]=="VA":
-                    n_cat_main+=n_cat_main+natoms
+                    n_cat_main+=natoms
                     n_types_cat_main+=1
                 else:
                     print("PROBLEM! Cation ",atom," in ",formula," not recognized")

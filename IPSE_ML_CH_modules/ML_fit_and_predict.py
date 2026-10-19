@@ -7,12 +7,16 @@ import datetime
 #import math
 
 from sklearn.preprocessing import StandardScaler
+# 2026-10-14: Pipelines fit the scaler only on each CV training fold.
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import normalize
 from sklearn.model_selection import cross_val_score, KFold, cross_validate
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.inspection import permutation_importance
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.base import clone  # ADDED
+# 2026-10-14: Optional JSON metadata leaves estimator/scaler pickle formats unchanged.
+from IPSE_ML_CH_modules.feature_metadata import load_metadata, save_metadata, align_features, combination_recipes
 
 from concurrent.futures import ProcessPoolExecutor, as_completed #multiprocessing-like but more robust 
 
@@ -33,7 +37,9 @@ signal.signal(signal.SIGALRM, handler)
 def Kfold_get_results(model,X,y,folds,n_jobs,return_indices=False):
     #function to do the k fold fitting. Moved otside the class because it's needed
     #by _fit_one_model (which also had to be outside for parallelism reasons)
-    scores = cross_validate(model,X,y,scoring=('r2', 'neg_mean_absolute_error'),
+    # 2026-10-14: Accept raw features and learn scaling separately inside each fold.
+    cv_model = make_pipeline(StandardScaler(), clone(model))
+    scores = cross_validate(cv_model,X,y,scoring=('r2', 'neg_mean_absolute_error'),
         cv=folds,n_jobs=n_jobs,return_train_score=True,error_score='raise')
     if return_indices:
         train_idx, test_idx = ([],[])
@@ -101,6 +107,8 @@ class ML_FitAndPredict():
         self.best_model_name=None
         self.scaler=None
         self.predictedVStrue=None
+        # 2026-10-14: Retain feature definitions for in-memory prediction as well as saved models.
+        self.feature_metadata=None
         self._make_ML_instances(n_core=n_core_ML,ML_algos=ML_algorithms)
         self.n_core_ML=n_core_ML
     def _make_ML_instances(self,n_core=1,ML_algos=["all"]):#temporary function to test ML models
@@ -114,9 +122,10 @@ class ML_FitAndPredict():
         #could put if conditions on ML_algos to instantiate ML algos directly here 
         from IPSE_ML_CH_modules.Instances_MLalgos import create_ML_instances
         self.models_to_test=create_ML_instances(n_core,ML_algos)
+    # 2026-10-14: Accept optional feature metadata without changing existing callers.
     def ML_fitting(self,features_matrix,targets,n_test_train_splits=5,n_jobs_TT=1,data_labels=None,
             file_name_statistics='fitting.log',print_predictedVStrue=False,
-            file_name_predictedVStrue='predictedVStrue.log',file_model=None,file_scaler=None):
+            file_name_predictedVStrue='predictedVStrue.log',file_model=None,file_scaler=None,feature_metadata=None):
         """
         Performs the fitting on features_matrix+targets, testing all models defined by 
         self.models_to_test. Produces self.best_model,self.best_model_name (see class definition)
@@ -141,6 +150,9 @@ class ML_FitAndPredict():
 
         NOTE: the best model is chosen as the one with lowest mean average error on test sets
         """
+        # 2026-10-14: A reproducible saved feature definition needs its matching saved scaler.
+        if feature_metadata is not None and file_model and not file_scaler:
+            raise ValueError("Saving feature metadata requires file_scaler")
         #---------------------developer variables--------------------------------------------------------------------
         #this write the true vs predicted file for the test set of each k-fold batch and for each tested ML algo. Also 
         #divides into badly and goodly predicted (threshold_bad)
@@ -159,13 +171,11 @@ class ML_FitAndPredict():
         #------------------------------------------------------------------------------------------------------------
         if os.path.exists(file_name_statistics): os.remove(file_name_statistics)
         X_unscaled = np.asarray(features_matrix)
-        scikit_scaler = StandardScaler()
-        self.scaler = scikit_scaler.fit(X_unscaled)
-        if file_scaler:
-            if os.path.exists(file_scaler): os.remove(file_scaler)
-            with open(file_scaler, 'wb') as f:
-                pickle.dump(self.scaler, f)
-        X = self.scaler.transform(X_unscaled)
+        # 2026-10-14: Reject metadata whose feature count does not match the fitting matrix.
+        if feature_metadata is not None and len(feature_metadata["features"]) != X_unscaled.shape[1]:
+            raise ValueError("Feature metadata does not match the fitting matrix")
+        # 2026-10-14: Keep CV inputs unscaled; fit the final scaler after model selection.
+        X = X_unscaled
         
         #GS tmp all
         np.set_printoptions(threshold=np.inf)
@@ -203,6 +213,10 @@ class ML_FitAndPredict():
                 for batch_n in range(n_test_train_splits):
                     X_train, X_test = X[cv_results["train_idx"][batch_n]],X[cv_results["test_idx"][batch_n]]
                     y_train, y_test = y[cv_results["train_idx"][batch_n]],y[cv_results["test_idx"][batch_n]]
+                    # 2026-10-14: Fold diagnostics use scaling learned from this training fold.
+                    scaler_fold = StandardScaler()
+                    X_train = scaler_fold.fit_transform(X_train)
+                    X_test = scaler_fold.transform(X_test)
                     model.fit(X_train, y_train)
                     y_train_pred = model.predict(X_train)
                     y_test_pred = model.predict(X_test)
@@ -339,14 +353,28 @@ class ML_FitAndPredict():
                         print(model_name,"TIMEOUT! ",flush=True)
         with open(file_name_statistics,"a") as f:
             f.write("best model: "+self.best_model_name+" (MAE: "+str(best_MAE)+" ); will be fitted to all training data and saved\n")
+        # 2026-10-14: Fit scaler and selected model on the same full fitting dataset,
+        # excluding the separate validation dataset; retain the scaler for prediction.
+        self.scaler = StandardScaler()
+        X = self.scaler.fit_transform(X_unscaled)
         self.best_model.fit(X, y)
         best_model_predicted_values = self.best_model.predict(X)
+
+        # 2026-10-14: Save the final full-data scaler paired with the selected model.
+        if file_scaler:
+            if os.path.exists(file_scaler): os.remove(file_scaler)
+            with open(file_scaler, 'wb') as f:
+                pickle.dump(self.scaler, f)
 
         if file_model:
             if os.path.exists(file_model): os.remove(file_model)
             with open(file_model, 'wb') as f:
                 pickle.dump(self.best_model, f)
 
+        # 2026-10-14: Save sidecar definitions and hashes only after both fitted artifacts exist.
+        self.feature_metadata=deepcopy(feature_metadata)
+        if file_model:
+            save_metadata(file_model,file_scaler,feature_metadata,self.best_model_name)
         self.predictedVStrue=zip(best_model_predicted_values,y)
         if not print_all_test_train and print_predictedVStrue:    
             with open(file_name_predictedVStrue, "w") as f:
@@ -742,13 +770,15 @@ class ML_FitAndPredict():
             new_feats = [f for f in selected_feats if f not in features_df.columns]
             X_nonredundant_combo = X_combo[new_feats]
             X_merged = pd.concat([features_df, X_nonredundant_combo], axis=1)
-            return X_merged
+            # 2026-10-14: Persist selected expressions as operators and stable input IDs.
+            return combination_recipes(features_df,X_merged,combo_types)
         
 
         
 
         #return non_zero_feature_combination
 
+    # 2026-10-14: Support stored scalers, array inputs, and unlabelled prediction safely.
     def ML_predict(self,features_matrix,features_scaler=None,input_ML_model=None,
             file_name_predictions='predictions.log',true_values=None,data_labels=None,return_prediction=False):
         """
@@ -759,7 +789,8 @@ class ML_FitAndPredict():
             a given target. The outer list is as long as the number of data (target values) to be predicted
           features_scaler (sklearn object or str): the features scaler (it must be the same as in
             the fitting!). Either the sklearn is passed as object, it is used, otherwise (if str
-            is provided) the scaler is read from a pkl file
+            is provided) the scaler is read from a pkl file. If omitted, use self.scaler
+            from fitting; prediction never refits the scaler.
           input_ML_model (sklearn object or str): a pre-trained sklearn model can be passed, 
             or (if str is provided) the model can be read from a pkl file. If nothing is
             supplied, the ML model is taken as the self.best_model (from ML_fitting function).
@@ -774,52 +805,82 @@ class ML_FitAndPredict():
           return_prediction (bool): if True, the function returns a list(?) with predicted properties
         """
 
-        X_unscaled = np.asarray(features_matrix)
-        if isinstance(features_scaler,str):
+        # 2026-10-14: Check optional arrays and row counts before predicting or writing output.
+        # 2026-10-14: Metadata aligns labelled features by identity; legacy arrays keep their order.
+        metadata = (load_metadata(input_ML_model,features_scaler)
+                    if isinstance(input_ML_model,(str,os.PathLike))
+                    else self.feature_metadata if input_ML_model is None else None)
+        X_unscaled = (align_features(features_matrix,metadata)
+                      if metadata is not None and isinstance(features_matrix,pd.DataFrame)
+                      else np.asarray(features_matrix))
+        if X_unscaled.ndim != 2 or X_unscaled.shape[0] == 0:
+            raise ValueError("features_matrix must be a non-empty 2D array")
+        n_samples = X_unscaled.shape[0]
+        has_targets = true_values is not None
+        has_labels = data_labels is not None
+        if has_targets:
+            y_true = np.asarray(true_values)
+            if y_true.ndim != 1 or len(y_true) != n_samples:
+                raise ValueError("true_values must contain one value per prediction row")
+        if has_labels:
+            labels = np.asarray(data_labels)
+            if labels.ndim != 1 or len(labels) != n_samples:
+                raise ValueError("data_labels must contain one label per prediction row")
+
+        # 2026-10-14: Load supplied artifacts or reuse the matching fitted scaler and model.
+        if isinstance(features_scaler, (str, os.PathLike)):
             with open(features_scaler, 'rb') as f_scaler:
                 scaler = pickle.load(f_scaler)
-        else:
-            scaler=features_scaler
-        X = scaler.transform(X_unscaled)
-
-        if not input_ML_model:
-            ML_model=self.best_model
-        else:
-            if isinstance(input_ML_model,str):
-                with open(input_ML_model, 'rb') as f_model:
-                    ML_model = pickle.load(f_model)
+        elif features_scaler is None:
+            # 2026-10-14: A saved model can locate its own matching scaler through the sidecar.
+            if metadata is not None and isinstance(input_ML_model,(str,os.PathLike)):
+                from pathlib import Path
+                with open(Path(input_ML_model).parent / metadata["scaler_file"],"rb") as handle:
+                    scaler = pickle.load(handle)
             else:
-                ML_model=input_ML_model
-        
+                scaler = self.scaler
+        else:
+            scaler = features_scaler
+        if scaler is None:
+            raise ValueError("No fitted scaler available; fit first or supply features_scaler")
+
+        if isinstance(input_ML_model, (str, os.PathLike)):
+            with open(input_ML_model, 'rb') as f_model:
+                ML_model = pickle.load(f_model)
+        elif input_ML_model is None:
+            ML_model = self.best_model
+        else:
+            ML_model = input_ML_model
+        if ML_model is None:
+            raise ValueError("No fitted model available; fit first or supply input_ML_model")
+
+        # 2026-10-14: Transform new data without fitting either saved artifact again.
+        X = scaler.transform(X_unscaled)
         y_pred = ML_model.predict(X)
+        if has_targets:
+            unsigned_errors = np.absolute(y_true-y_pred)
+            MAE = np.mean(unsigned_errors)
+            print("mean average error: ", MAE)
 
-        if true_values: 
-            y_true = np.asarray(true_values)
-            unsigned_errors=np.absolute(y_true-y_pred)
-            MAE=np.mean(unsigned_errors)
-            print("mean average error: ",MAE)
-
+        # 2026-10-14: Use explicit presence flags for all output formats, including no labels.
         with open(file_name_predictions, "w") as f:
-            if data_labels and true_values:
+            if has_labels and has_targets:
                 f.write("label, predicted, true \n")
-                for label,predicted,true in zip(data_labels,y_pred,y_true):
-                    f.write(label+"   "+str(predicted)+"   "+str(true)+ " \n")
-            elif true_values and not data_labels:
+                for label, predicted, true in zip(labels, y_pred, y_true):
+                    f.write(str(label)+"   "+str(predicted)+"   "+str(true)+" \n")
+            elif has_targets:
                 f.write("predicted, true \n")
-                for predicted,true in zip(y_pred,y_true):
-                    f.write(str(predicted)+"   "+str(true)+ " \n")
-            elif data_labels and not true_values:
+                for predicted, true in zip(y_pred, y_true):
+                    f.write(str(predicted)+"   "+str(true)+" \n")
+            elif has_labels:
                 f.write("label, predicted \n")
-                for label,predicted in zip(data_labels,y_pred):
-                    f.write(label+"   "+str(predicted)+ " \n")
-            elif not data_lables and not true_values:
+                for label, predicted in zip(labels, y_pred):
+                    f.write(str(label)+"   "+str(predicted)+" \n")
+            else:
                 f.write("predicted \n")
                 for predicted in y_pred:
-                    f.write(str(value)+"\n")
+                    f.write(str(predicted)+"\n")
         if return_prediction:
-            if data_labels:
-                return list(zip(data_labels,y_pred))
-            else:
-                return y_pred
-
-
+            if has_labels:
+                return list(zip(labels, y_pred))
+            return y_pred

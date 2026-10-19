@@ -28,3 +28,52 @@ most of which also have a "--help" option that explains their functionalities
 - custodian_HTvasp.py: a wrapper of cuctodian* to automatically handle a VASP simulation, including automatic error handling. 
   To use this for high-throughput, combine it with scripts for habdling array of jobs (e.g. in slurm)     
   *https://github.com/materialsproject/custodian
+
+- vasp_mongo.py: independent transfer of VASP results between folders and MongoDB.
+  Edit the settings at the top of the script, then run: python utilities/vasp_mongo.py
+  action="import": scan root_dir down to max_depth; read the last F/TOTEN (or E0)
+  from OUTCAR, falling back to OSZICAR; read CONTCAR, falling back to POSCAR.
+  POSCAR fallback is reported because it may be the initial structure.
+  Stores struct, formula, elements, E_total (eV/cell), E_per_atom (eV/atom),
+  source files/folder, energy convention, and termination-marker status.
+  # 2026-10-17: Folder-derived import IDs and explicit collision/update policy.
+  Import IDs join the last id_folder_levels folders (default 2) with "__".
+  Optional id_prefix adds a project namespace. Host and leading path do not affect IDs.
+  Existing IDs are rejected unless update_existing=True; updates preserve created_at.
+  This utility does not compute formation energies or convergence.
+  action="export": write POSCAR_<label> files and energies.csv (label, chosen energy).
+  # 2026-10-18: Include stored formulas in export labels, independently of import options.
+  Labels are <formula>_<MongoDB-ID> when formula is a nonempty string, otherwise <MongoDB-ID>.
+  POSCAR_<label> and energies.csv use the same label; the POSCAR comment also matches.
+  IDs containing path separators or control characters are skipped with a message.
+  Set elements=["Pb","S","Cl"] with element_selection="subset" for compounds made
+  only of these elements (including lower binaries); "exact" requires all and only
+  those species; "contains_all" permits additional species. Empty elements allows all.
+  excluded_elements and mongo_filters provide additional export filtering.
+  Change export_energy_field and mongo_structure_field for existing collections;
+  nested field paths and structures stored as POSCAR text are also supported.
+  Existing export files are protected unless overwrite=True. All options, including
+  Mongo server/database/collection, are at the beginning; no input module is needed.
+  Dependencies: pymatgen (including monty) and pymongo. No ML environment is required.
+  Offline regression checks: python -m unittest utilities.test_vasp_mongo
+  # 2026-10-17: Optional VASP file archival through collection-specific GridFS buckets.
+  upload_incar=True stores INCAR unchanged; upload_oszicar=True stores OSZICAR.gz;
+  upload_outcar=False can be enabled to store OUTCAR.gz. Missing files are skipped.
+  GridFS uses <collection>_files.files and <collection>_files.chunks in the same DB.
+  Records contain files references, original/stored sizes, compression and SHA256.
+  Explicit updates reuse identical attachments and delete replaced blobs after linking.
+  Disabled/missing files leave existing attachments intact. File errors print warnings
+  while retaining the imported structure/energy; inspect these warnings after imports.
+  export_original_files=True restores attachments to export_dir/<MongoDB-ID>/,
+  preserving gzip; POSCAR_<label> and energies.csv remain in export_dir.
+  Export verifies stored checksums and respects overwrite for attachment files too.
+  # 2026-10-18: Optional exports from incomplete Mongo records (both default False).
+  export_energy_without_structure=True permits CSV energy rows without a POSCAR.
+  export_structure_without_energy=True permits POSCARs without an energy CSV row.
+  Missing, null, or invalid counterparts produce PARTIAL messages; unavailable values
+  are never fabricated. Records lacking both usable results are skipped.
+  Element filtering of energy-only records requires valid elements metadata; records
+  with unknown composition are skipped when elements/excluded_elements filters apply.
+  Stored attachments are also retrieved for accepted partial records when enabled.
+  #GS 19oct26: tested on sulfides dataset (import/export) and oqmd (export). Seems 
+  everything is working correctly. Need to polish long description above.
