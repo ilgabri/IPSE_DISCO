@@ -1,7 +1,0 @@
-numpy
-requests
-pymongo
-tabulate
-pymatgen
-mp-api
-qmpy_rester

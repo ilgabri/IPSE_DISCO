@@ -78,3 +78,11 @@ datasets
 #  *.tmp
 #  *.bak
 
+
+# 2026-10-30: Ignore generated installation and test artefacts.
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.pytest_cache/

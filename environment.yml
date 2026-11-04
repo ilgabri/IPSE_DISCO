@@ -1,0 +1,25 @@
+# 2026-10-30: Combined dependencies for conda-first installation of the original workflows.
+name: IPSE_DISCO
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - requests
+  - pymongo
+  - tabulate
+  - pymatgen
+  - mp-api
+  - pandas
+  - scikit-learn
+  - xgboost
+  - shap
+  - matminer==0.10.1
+  - mendeleev
+  - periodictable
+  - smact
+  - setuptools<82
+  - pip
+  - pip:
+      - qmpy_rester
+      - chemformula

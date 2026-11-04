@@ -1,3 +1,4 @@
+# 2026-10-30: Install the package once; original Python input files and working directories are unchanged.
 +++++++++++++++++++++++++++++++++
 +++++ Pb_S_Cl_fromdatabases +++++
 +++++++++++++++++++++++++++++++++
@@ -14,9 +15,9 @@ HOW TO RUN
 (after having created and activated the IPSE_DB environment, see IPSE-DISCO manual):
 0  - register on the Materials Project (MP) website, since to run MP inputs you need to insert 
      you own API key in the input file
-1  - copy in the folder where IPSE-DISCO will be run the folder IPSE_DB_modules and the
-     file IPSE_DB.py (from the GitHub repository main page)
-2  - launch with python IPSE_DB.py <input file name> [<output file name>]
+1  - install IPSE-DISCO with pip install /path/to/IPSE_DISCO
+     (or install conda dependencies first, then pip install --no-deps /path/to/IPSE_DISCO)
+2  - launch with python -m ipse_disco.IPSE_DB <input file name> [<output file name>]
 2b - optionally, the high-energy polymorphs can be excluded by running (linux synthax adopted 
      here, excluding polymorphs lying more than 0.15 eV/atom above the structural ground state):
 
@@ -42,11 +43,9 @@ Feature analysis is also performed; to switch it off, change do_features_analysi
 to do_features_analysis=False in the input file.
 
 HOW TO RUN
-1  - copy in the running folder the following directory 
-     and file from the IPSE-DISCO GitHub repository: 
-     IPSE_ML_CH_modules/ IPSE_ML_main.py
+1  - install IPSE-DISCO once; keep input_IPSE_ML.py and the dataset in the running folder
 2  - run with:
-     python IPSE_ML_main.py > out &
+     python -m ipse_disco.IPSE_ML_main > out &
 
 
 
@@ -59,16 +58,19 @@ In this example, the conex hull for Pb-S-Cl is evaluated by combining data from 
 oqmd database and from the ML model 
 
 HOW TO RUN
-0  - copy here (by 'here' we mean the folder where the code is run) the following directory 
-     and two files from the IPSE-DISCO GitHub repository:
-     IPSE_ML_CH_modules/ IPSE_CH_main.py IPSE_ML_main.py  
+0  - install IPSE-DISCO once; keep input_IPSE_CH.py in the running folder
 1  - copy here the two pkl files (scaler.pkl and ML_model.pkl) produced in the example 
      ML-training_chalcohalides_oqmd_combo_features [these pkl are to reproduce the results
      of the above mentioned article from Saleh&Manna, but clerly previosly trained ML model
      can be adopted; in this case, also copy the file input_IPSE_ML.py adopted to make those 
      pkl file]
 2  - run with:
-     python IPSE_CH_main.py  
+     python -m ipse_disco.IPSE_CH_main
 
 
+
++++++++++++++++++++++++++++++++++++++++++++++
+++++++++ example_datasets +++++++++++++++++++
++++++++++++++++++++++++++++++++++++++++++++++
+Small atasets to test IPSE_ML 
 

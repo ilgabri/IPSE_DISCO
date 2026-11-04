@@ -55,7 +55,8 @@ most of which also have a "--help" option that explains their functionalities
   Existing export files are protected unless overwrite=True. All options, including
   Mongo server/database/collection, are at the beginning; no input module is needed.
   Dependencies: pymatgen (including monty) and pymongo. No ML environment is required.
-  Offline regression checks: python -m unittest utilities.test_vasp_mongo
+  # 2026-10-30: Regression tests live in tests/; utility scripts stay in this directory.
+  Offline regression checks: python -m unittest discover -s tests
   # 2026-10-17: Optional VASP file archival through collection-specific GridFS buckets.
   upload_incar=True stores INCAR unchanged; upload_oszicar=True stores OSZICAR.gz;
   upload_outcar=False can be enabled to store OUTCAR.gz. Missing files are skipped.

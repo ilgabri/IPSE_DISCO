@@ -1,0 +1,33 @@
+# 2026-10-30: Minimal packaging of the existing workflows and original module names.
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ipse-disco"
+version = "1.0.3"
+description = "Materials database searches, machine learning and convex-hull analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Gabriele Saleh"}]
+dependencies = [
+    "numpy", "requests", "pymongo", "tabulate", "pymatgen", "mp-api", "qmpy_rester",
+    "pandas", "scikit-learn", "xgboost", "shap", "matminer==0.10.1", "mendeleev",
+    "periodictable", "smact", "chemformula", "setuptools<82",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "build", "twine"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ipse_disco*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"ipse_disco.IPSE_ML_CH_modules" = ["atomic_data_mendeleev.csv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

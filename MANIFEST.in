@@ -1,0 +1,12 @@
+# 2026-10-30: Retain configs/environments and standalone utilities in source archives.
+# 2026-11-04: Remove obsolete patterns; example CSVs are included recursively below.
+include LICENSE README.md environment*.yml
+recursive-include configs *.py
+recursive-include examples *.py *.csv inp README_examples
+recursive-include tests *.py
+recursive-include utilities *.py readme_utilities
+prune utilities/not_shared
+prune datasets
+prune build
+prune dist
+global-exclude __pycache__ *.py[cod] *.swp

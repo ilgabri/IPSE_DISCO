@@ -75,144 +75,158 @@ Evaluate thermodynamic stability using convex-hull construction.
 
 ---
 
+<!-- 2026-10-30: Explain the minimal package layout while preserving the original input/workflow model. -->
 ## Installation
 
-### Clone the Repository
+Use Python 3.11 or newer. Clone the repository and choose pip or conda:
 
 ```bash
 git clone https://github.com/ilgabri/IPSE_DISCO.git
 cd IPSE_DISCO
 ```
 
----
-
-### Option 1: Install with Pip
-
-Create a virtual environment (recommended):
+### With pip
 
 ```bash
-python -m venv venv_ipse
-source venv_ipse/bin/activate
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install .
 ```
 
-Install dependencies.
+For development, `python -m pip install -e .` makes source changes available without
+reinstalling. The package installs the dependencies for the three application modules.
 
-#### Database Module
+### With conda, followed by pip
 
 ```bash
-pip install -r requirements_DB.txt
+conda env create -f environment.yml
+conda activate IPSE_DISCO
+python -m pip install --no-deps .
+python -m pip check
 ```
 
-#### Machine Learning + Convex Hull Modules
+<!-- 2026-11-04: Dependencies are declared in pyproject.toml; retain the task-specific conda files. -->
+`environment.yml` provides the combined dependencies. `environment_DB.yml` and
+`environment_ML_CH.yml` remain available for task-specific conda installations.
+For pip installations, dependencies are declared in `pyproject.toml`.
+After creating a task-specific environment, `pip install --no-deps .` installs the
+code without adding dependencies for the other tasks; run only the modules whose
+dependencies are installed.
 
-```bash
-pip install -r requirements_ML_CH.txt
-```
-
----
-
-### Option 2: Install with Conda
-
-#### Database Environment
-
-```bash
-conda env create -f environment_DB.yml
-conda activate <environment_name>
-```
-
-#### ML/CH Environment
-
-```bash
-conda env create -f environment_ML_CH.yml
-conda activate <environment_name>
-```
-
----
-
-## Quick Start
-
-### 1. Database Search (IPSE_DB)
-
-Create an input file:
+<!-- 2026-11-04: Show the example datasets in their current directory. -->
+## Repository layout
 
 ```text
-database mp
-
-ion_A Cs
-ion_B In,Sb
-ion_C Cl,Br,I
-
-numspecies 4
-gapwidth 0 10
-
-E_above_hull -100.0 0.05
-
-check_perovskites
-getstruct
+IPSE_DISCO/
+├── README.md
+├── pyproject.toml
+├── environment.yml
+├── environment_DB.yml
+├── environment_ML_CH.yml
+├── configs/
+│   ├── input_IPSE_ML.py
+│   └── input_IPSE_CH.py
+├── src/
+│   └── ipse_disco/
+│       ├── __init__.py
+│       ├── IPSE_DB.py
+│       ├── IPSE_ML_main.py
+│       ├── IPSE_CH_main.py
+│       ├── IPSE_DB_modules/
+│       └── IPSE_ML_CH_modules/
+├── utilities/
+├── tests/
+└── examples/
+    └── example_datasets/
+        ├── dataset_example.csv
+        └── dataset_example_validation.csv
 ```
 
-Run:
-
-```bash
-python IPSE_DB.py input.txt
-```
-
-Outputs:
-
-* `IpseDisco.out`
-* `IpseDisco.csv`
-* Optional crystal structure files (`*.vasp`)
-
----
-
-### 2. Machine Learning (IPSE_ML)
-
-Configure options in:
-
-```text
-input_IPSE_ML.py
-```
-
-Run:
-
-```bash
-python IPSE_ML_main.py
-```
-
-Typical workflow:
-
-1. Retrieve materials using IPSE_DB
-2. Store datasets in MongoDB or CSV
-3. Train ML models
-4. Save trained models
-5. Predict properties of new compounds
-
----
-
-### 3. Convex Hull Analysis (IPSE_CH)
-
-Configure:
-
-```text
-input_IPSE_CH.py
-```
-
-Run:
-
-```bash
-python IPSE_CH_main.py
-```
-
-Example:
+The application and helper files keep their original filenames. Their imports now
+start with `ipse_disco`, for example:
 
 ```python
-CH_elements = ["Bi", "S", "Br"]
-
-data_types_CH = ["mongo"]
-
-plot_CH = True
-save_CH = True
+from ipse_disco.IPSE_ML_CH_modules.data_for_ML import Data4ML
+from ipse_disco.IPSE_ML_CH_modules.ML_fit_and_predict import ML_FitAndPredict
 ```
+
+The atomic-property CSV tables remain beside the ML/CH helpers and are included
+when the package is installed. Public utility scripts remain only in `utilities/`;
+they are standalone repository tools, not duplicated inside the application package.
+Private `utilities/not_shared/` scripts and local `datasets/` are excluded from
+package distributions.
+
+## Running the application
+
+Run the installed modules with `python -m`. Input-file formats, setting names, and
+working-directory behavior are the same as before packaging. There is no YAML
+configuration layer or automatic search through `configs/`.
+
+### Database search
+
+```bash
+python -m ipse_disco.IPSE_DB input.txt
+python -m ipse_disco.IPSE_DB input.txt custom_output.out
+```
+
+Existing database text inputs continue to work. For example, from the repository root:
+
+```bash
+python -m ipse_disco.IPSE_DB examples/Pb_S_Cl_fromdatabases/Pb-S-Cl_oqmd/inp
+```
+
+Supply your own API credentials where required by the database.
+
+### Machine learning
+
+Place your `input_IPSE_ML.py` in the directory where you run the calculation. Start
+from the existing template if useful:
+
+```bash
+cp /path/to/IPSE_DISCO/configs/input_IPSE_ML.py .
+# Edit the input to select your dataset and calculation settings.
+python -m ipse_disco.IPSE_ML_main
+```
+
+### Convex hull
+
+Place your `input_IPSE_CH.py` in the calculation directory:
+
+```bash
+cp /path/to/IPSE_DISCO/configs/input_IPSE_CH.py .
+# Edit the input for your system and data files.
+python -m ipse_disco.IPSE_CH_main
+```
+
+Relative dataset/model/output paths retain their original meaning: they are relative
+to the calculation's working directory, not to the template's location. Metadata-aware
+CH prediction continues to restore saved feature settings; legacy models still use
+`input_IPSE_ML.py` from the calculation directory when available.
+
+### Utilities
+
+Run the original standalone scripts from the checkout, for example:
+
+```bash
+python /path/to/IPSE_DISCO/utilities/vasp_mongo.py
+python /path/to/IPSE_DISCO/utilities/check_vasp.py --help
+```
+
+Their settings remain at the beginning of the original scripts where applicable.
+
+### Tests and package builds
+
+From the repository root:
+
+```bash
+python -m pip install -e ".[test]"
+python -m pytest
+python -m build
+```
+
+The tests use temporary calculation directories and mock database fetching. Static
+PNG export remains optional and requires Kaleido/Chrome as appropriate; HTML plotting
+does not require it.
 
 ---
 
