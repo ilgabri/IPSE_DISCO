@@ -1,6 +1,7 @@
 # IPSE-DISCO
 
 **Integrated Platform for SEmiconductors DISCOvery (IPSE-DISCO)**
+
 -->If you use this code, please cite: 
 Saleh, G., & Manna, L. (2026). Data-Driven Framework to Accelerate Semiconductor Discovery. ACS Materials Letters.<--
 
