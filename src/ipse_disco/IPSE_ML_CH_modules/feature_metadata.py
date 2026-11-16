@@ -19,6 +19,13 @@ import pandas as pd
 FORMAT_VERSION = 1
 DESCRIPTOR_VERSIONS = {"ID1": 1, "ID2": 1, "ID3": 2, "ID4": 1,
                        "matminer": 1, "pnorm": 1, "combinations": 1}
+# 2026-11-12: New descriptor revisions leave existing descriptor/model definitions unchanged.
+DESCRIPTOR_VERSIONS.update({style: 1 for style in
+    ("c10bt_onehotcha", "c10bt_onehotcat", "c10bt_elprops", "c10bt_catdistr")})
+# 2026-11-13: Full-composition counts have their own descriptor identity and revision.
+DESCRIPTOR_VERSIONS["c10bt_fullcomp"] = 1
+# 2026-11-16: Fingerprint revisions cover reduction, capping, and random-vector definitions.
+DESCRIPTOR_VERSIONS["fingerprint1"] = 1
 
 
 def metadata_path(model_file):
@@ -105,7 +112,13 @@ def feature_ids(styles, options, snapshot=None):
     """
     ids = []
     for style in styles:
-        if style == "ID1":
+        # 2026-11-16: Seeds, dimensions and distributions distinguish numerical fingerprint definitions.
+        if style == "fingerprint1":
+            from ipse_disco.IPSE_ML_CH_modules.Featurizer import fingerprint1_options
+            settings = fingerprint1_options(options.get(style))
+            definition = hashlib.sha256(json.dumps(settings).encode()).hexdigest()
+            ids.extend(f"fingerprint1.{definition}.{index}" for index in range(settings[1]))
+        elif style == "ID1":
             for prop in options["ID1"]:
                 sides = ["anion"] if prop == "covalent_radius_bragg" else (
                     ["cation"] if prop == "metallic_radius" else ["cation", "anion"])
@@ -130,6 +143,23 @@ def feature_ids(styles, options, snapshot=None):
             ids.extend(f"ID4.{prop}.{side}.{stat}" for prop, side in
                        [("Es", "anion"), ("Ep", "anion"), ("rs", "anion"), ("rp", "anion"),
                         ("Es", "cation"), ("rs", "cation")] for stat in ["max", "min", "mean"])
+        # 2026-11-12: Save stable c10bt identities independently of human-readable labels.
+        elif style == "c10bt_onehotcha":
+            from ipse_disco.IPSE_ML_CH_modules.Featurizer import C10BT_CHALCOGENS
+            ids.extend(f"{style}.{element}" for element in C10BT_CHALCOGENS)
+        elif style == "c10bt_onehotcat":
+            from ipse_disco.IPSE_ML_CH_modules.Featurizer import C10BT_CATIONS
+            ids.extend(f"{style}.{element}" for element in C10BT_CATIONS)
+        elif style == "c10bt_elprops":
+            ids.extend(f"{style}.{prop}.{quantity}" for prop in options[style]
+                       for quantity in ("cation_range", "cation_anion_difference"))
+        elif style == "c10bt_catdistr":
+            ids.extend(f"{style}.group.{group}" for group in range(11, 16))
+            ids.append(f"{style}.anion_cation_ratio")
+        # 2026-11-13: Count-feature IDs are distinct from unscaled one-hot identities.
+        elif style == "c10bt_fullcomp":
+            from ipse_disco.IPSE_ML_CH_modules.Featurizer import C10BT_CATIONS, C10BT_CHALCOGENS
+            ids.extend(f"{style}.{element}" for element in C10BT_CATIONS + C10BT_CHALCOGENS)
     # Native descriptors precede matminer features, regardless of their order in styles.
     if "matminer" in styles:
         if snapshot and snapshot.get("matminer"):
@@ -396,6 +426,9 @@ def build_metadata(data, config, features_df=None):
                       "descriptor_versions": {key: DESCRIPTOR_VERSIONS[key] for key in
                                               set(settings["styles_ML_features"]) | {"combinations"}},
                       "settings": settings,
+                      # 2026-11-16: Save actual matrices so prediction does not depend on a future RNG version.
+                      **({"fingerprint1_snapshot": data.atomic_random}
+                         if "fingerprint1" in settings["styles_ML_features"] else {}),
                       "atomic_properties": data.atomic_properties.to_dict(orient="split"),
                       "matminer_snapshot": matminer_snapshot(settings["styles_ML_features"],
                                                             data.features_options),
@@ -525,6 +558,13 @@ def restore_feature_data(data, metadata):
     table = metadata["atomic_properties"]
     data.atomic_properties = pd.DataFrame(table["data"], columns=table["columns"])
     data.matminer_snapshot = copy.deepcopy(metadata["matminer_snapshot"])
+    # 2026-11-16: Restore fingerprint matrices without regenerating them; old metadata stays compatible.
+    data.atomic_random = copy.deepcopy(metadata.get("fingerprint1_snapshot"))
+    if data.atomic_random is not None:
+        from ipse_disco.IPSE_ML_CH_modules.Featurizer import fingerprint1_options
+        data.atomic_random_settings = fingerprint1_options(data.features_options.get("fingerprint1"))
+    else:
+        data.atomic_random_settings = None
 
 
 def align_features(frame, metadata):

@@ -35,11 +35,63 @@ def handler(signum, frame):
     raise Timeout()
 signal.signal(signal.SIGALRM, handler)
 
-def Kfold_get_results(model,X,y,folds,n_jobs,return_indices=False):
+# 2026-11-12: Preserve explicitly identified one-hot columns while standardizing other features.
+class SelectiveStandardScaler(StandardScaler):
+    """Batch-fit StandardScaler with identity transforms for selected column indices.
+
+    ``unscaled_columns`` is a sequence of zero-based indices. The constructor
+    retains it for sklearn cloning; fitted mean/scale entries become 0/1 there.
+    The inherited transform/inverse_transform preserve column order and shape.
+    Instances, including the index selection, can be saved in the existing scaler pickle.
+    """
+    def __init__(self, unscaled_columns=(), *, copy=True, with_mean=True, with_std=True):
+        """Store excluded columns and the usual StandardScaler options without fitting."""
+        self.unscaled_columns = unscaled_columns
+        super().__init__(copy=copy, with_mean=with_mean, with_std=with_std)
+
+    def fit(self, X, y=None, sample_weight=None):
+        """Learn training-set statistics and disable centering/scaling for excluded columns."""
+        super().fit(X, y=y, sample_weight=sample_weight)
+        columns = np.asarray(self.unscaled_columns)
+        if columns.ndim != 1 or (columns.size and columns.dtype.kind not in "iu"):
+            raise ValueError("unscaled_columns must be a sequence of integer column indices")
+        if columns.size:
+            if np.any(columns < 0) or np.any(columns >= self.n_features_in_):
+                raise ValueError("unscaled_columns contains an out-of-range column index")
+            if self.with_mean:
+                self.mean_[columns] = 0.0
+            if self.with_std:
+                self.scale_[columns] = 1.0
+        return self
+
+
+# 2026-11-12: Derive exclusions from stable identities, never display labels or observed values.
+def _scaler_for_features(features, metadata=None):
+    """Create an unfitted scaler from ordered metadata or DataFrame feature IDs.
+
+    Only raw c10bt one-hot identities are excluded. Derived combinations and
+    callers without identities retain normal scaling. Existing saved scalers
+    are never altered by this helper.
+    """
+    if metadata is not None:
+        identities = [feature["id"] for feature in metadata["features"]]
+    elif isinstance(features, pd.DataFrame):
+        mapping = features.attrs.get("feature_ids", {})
+        identities = [mapping.get(column, "") for column in features.columns]
+    else:
+        identities = []
+    excluded = tuple(index for index, identity in enumerate(identities)
+                     if isinstance(identity, str) and identity.startswith(
+                         ("c10bt_onehotcha.", "c10bt_onehotcat.")))
+    return SelectiveStandardScaler(excluded) if excluded else StandardScaler()
+
+
+# 2026-11-12: Clone the selected scaling policy independently inside every CV training fold.
+def Kfold_get_results(model,X,y,folds,n_jobs,return_indices=False,scaler=None):
     #function to do the k fold fitting. Moved otside the class because it's needed
     #by _fit_one_model (which also had to be outside for parallelism reasons)
     # 2026-10-14: Accept raw features and learn scaling separately inside each fold.
-    cv_model = make_pipeline(StandardScaler(), clone(model))
+    cv_model = make_pipeline(StandardScaler() if scaler is None else clone(scaler), clone(model))
     scores = cross_validate(cv_model,X,y,scoring=('r2', 'neg_mean_absolute_error'),
         cv=folds,n_jobs=n_jobs,return_train_score=True,error_score='raise')
     if return_indices:
@@ -60,7 +112,8 @@ def Kfold_get_results(model,X,y,folds,n_jobs,return_indices=False):
 
 
 
-def _fit_one_model(model_name, model, X, y, folds, n_jobs_TT, n_test_train_splits):
+# 2026-11-12: Forward the scaler policy to models evaluated in worker processes.
+def _fit_one_model(model_name, model, X, y, folds, n_jobs_TT, n_test_train_splits, scaler=None):
     #function to fit one model, created to treat ML_models in parallel when fitting
     #it has to be outside the class to work with ProcessPoolExecutor
     try:
@@ -70,7 +123,8 @@ def _fit_one_model(model_name, model, X, y, folds, n_jobs_TT, n_test_train_split
             y,
             folds=folds,
             n_jobs=n_jobs_TT,
-            return_indices=False
+            return_indices=False,
+            scaler=scaler,
         )
 
         average_MAE_test = sum(cv_results["MAE_test"]) / n_test_train_splits
@@ -148,6 +202,9 @@ class ML_FitAndPredict():
             provided, the model is not saved to a file.
           file_scaler (str): file name in which the scaler is saved. If name is not provided, 
             the scaler is not saved to a file.
+          feature_metadata (dict or None): ordered stable feature definitions. Raw c10bt
+            one-hot columns are left unscaled. DataFrame feature_ids attributes can also
+            supply identities; arrays without metadata retain ordinary standard scaling.
 
         NOTE: the best model is chosen as the one with lowest mean average error on test sets
         """
@@ -175,6 +232,8 @@ class ML_FitAndPredict():
         # 2026-10-14: Reject metadata whose feature count does not match the fitting matrix.
         if feature_metadata is not None and len(feature_metadata["features"]) != X_unscaled.shape[1]:
             raise ValueError("Feature metadata does not match the fitting matrix")
+        # 2026-11-12: Select one scaling policy for CV, diagnostics, and final full-data fitting.
+        scaler_template = _scaler_for_features(features_matrix, feature_metadata)
         # 2026-10-14: Keep CV inputs unscaled; fit the final scaler after model selection.
         X = X_unscaled
         
@@ -207,7 +266,7 @@ class ML_FitAndPredict():
             folds = KFold(n_splits=n_test_train_splits, shuffle=True, random_state=41) 
             for model_name,model in self.models_to_test.items():
                 #Kfold_get_results defined outside the class
-                cv_results=Kfold_get_results(model,X,y,folds=folds,n_jobs=n_jobs_TT,return_indices=True)
+                cv_results=Kfold_get_results(model,X,y,folds=folds,n_jobs=n_jobs_TT,return_indices=True,scaler=scaler_template)
                 with open(file_name_statistics,"a") as f:
                     f.write("***ML model: "+model_name+" ***\n")
                     f.write("r2 train      r2 test      MAE train    MAE test\n")
@@ -215,7 +274,7 @@ class ML_FitAndPredict():
                     X_train, X_test = X[cv_results["train_idx"][batch_n]],X[cv_results["test_idx"][batch_n]]
                     y_train, y_test = y[cv_results["train_idx"][batch_n]],y[cv_results["test_idx"][batch_n]]
                     # 2026-10-14: Fold diagnostics use scaling learned from this training fold.
-                    scaler_fold = StandardScaler()
+                    scaler_fold = clone(scaler_template)
                     X_train = scaler_fold.fit_transform(X_train)
                     X_test = scaler_fold.transform(X_test)
                     model.fit(X_train, y_train)
@@ -286,7 +345,8 @@ class ML_FitAndPredict():
                         folds,
                         n_jobs_TT,
                         #1,
-                        n_test_train_splits
+                        n_test_train_splits,
+                        scaler_template,
                     )
                     for model_name, model in models_in_parallel.items()
                 ]
@@ -331,7 +391,7 @@ class ML_FitAndPredict():
                 try:
                     signal.alarm(t_max_fitting)   # timeout
                     try:
-                        cv_results=Kfold_get_results(model,X,y,folds=folds,n_jobs=n_jobs_TT,return_indices=False)#defined outside class
+                        cv_results=Kfold_get_results(model,X,y,folds=folds,n_jobs=n_jobs_TT,return_indices=False,scaler=scaler_template)#defined outside class
                         with open(file_name_statistics,"a") as f:
                             f.write("***ML model: "+model_name+" ***\n")
                             f.write("r2 train      r2 test      MAE train    MAE test\n")
@@ -356,7 +416,7 @@ class ML_FitAndPredict():
             f.write("best model: "+self.best_model_name+" (MAE: "+str(best_MAE)+" ); will be fitted to all training data and saved\n")
         # 2026-10-14: Fit scaler and selected model on the same full fitting dataset,
         # excluding the separate validation dataset; retain the scaler for prediction.
-        self.scaler = StandardScaler()
+        self.scaler = clone(scaler_template)
         X = self.scaler.fit_transform(X_unscaled)
         self.best_model.fit(X, y)
         best_model_predicted_values = self.best_model.predict(X)
@@ -710,6 +770,8 @@ class ML_FitAndPredict():
             new_combo_columns = pd.DataFrame({f"e^{col1}": (np.exp(features_df[col1]/1.E+4)) for col1 in features_df.columns}) #scaling to avoid overflow
             feature_names.extend(list(new_combo_columns.columns.values))
             X_combo = pd.concat([X_combo,new_combo_columns],axis=1)
+        # 2026-11-12: Only unchanged original columns inherit one-hot IDs; combinations stay scaled.
+        X_combo.attrs["feature_ids"] = features_df.attrs.get("feature_ids", {})
         X_train, X_test, y_train, y_test = train_test_split(X_combo, target, test_size=0.2, random_state=seed_random)
         if regularized_model=="lasso":
             regularized_model_step=("lasso", Lasso(alpha=alpha_regularization, max_iter=10000, random_state=seed_random))
@@ -724,7 +786,7 @@ class ML_FitAndPredict():
         #other possibilities: sklearn.linear_model.SGDRegressor,sklearn.linear_model.BayesianRidge,
         #   sklearn.linear_model.LassoLars,sklearn.linear_model.Ridge,sklearn.linear_model.LogisticRegression,
         model = Pipeline([
-            ("scaler", StandardScaler()),
+            ("scaler", _scaler_for_features(X_combo)),
             regularized_model_step
         ])
 

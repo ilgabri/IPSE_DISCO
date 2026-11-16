@@ -1,6 +1,8 @@
 # IPSE-DISCO
 
 **Integrated Platform for SEmiconductors DISCOvery (IPSE-DISCO)**
+-->If you use this code, please cite:<--
+-->Saleh, G., & Manna, L. (2026). Data-Driven Framework to Accelerate Semiconductor Discovery. ACS Materials Letters.<--
 
 IPSE-DISCO is a Python-based computational platform for data-driven materials discovery and design. It integrates **materials databases**, **machine learning**, and **thermodynamic stability analysis** into a unified workflow for identifying stable materials with targeted properties.
 

@@ -1,6 +1,8 @@
 
 styles_ML_features=["ID1","ID2","ID3","ID4"] 
 options_ML_styles={
+    # 2026-11-16: Enable fingerprint1 in styles_ML_features and supply all three settings below.
+    # "fingerprint1": {"N": 20, "M": 100, "S": 42},  # Optional distribution defaults to "gaussian".
     "ID1":['atomic_radius_rahm','atomic_volume','covalent_radius_bragg','covalent_radius_cordero',
         'dipole_polarizability','e_affinity','en_allen','electronegativity_martynov-batsanov',
         'en_pauling','electronegativity_sanderson','en_ghosh','ionization_energy',

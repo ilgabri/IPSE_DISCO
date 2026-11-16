@@ -17,8 +17,9 @@ import itertools
 
 
 
+# 2026-11-16: Pass precomputed elemental matrices to the optional fingerprint descriptor.
 def features_from_formula(formula,feature_types,elements_index,properties_for_statistics,
-        atomic_properties,anion_elements,atomic_ox_states=None,feat_names_only=False,style_options=None):
+        atomic_properties,anion_elements,atomic_ox_states=None,feat_names_only=False,style_options=None,atomic_random=None):
     """this calls the functions to calculate the features from the formula. 
     Attributes:
     formula (str): chemical formula in Hill notation 
@@ -32,13 +33,15 @@ def features_from_formula(formula,feature_types,elements_index,properties_for_st
         returned (formula and other input params ignored) 
     style_options (dict): keys are styles (ID1, ID2, etc), values are the options for each style. 
         ID1 is used differently b/c the options are directly used in Data4ML to select which atomic features
+    atomic_random (dict): precomputed N by M matrices for fingerprint1.
     """
     if not style_options: print("PROBLEM! no feature options passed to Featurizer.py")
     if feat_names_only:
         feat_names=[]
     else:
         feat_list=[]
-        formula_dict=ChemFormula(formula).element
+        # 2026-11-16: Fingerprints parse decimals separately; preserve other styles' parser.
+        formula_dict=ChemFormula(formula).element if any(style != "fingerprint1" for style in feature_types) else None
     for feature_type in feature_types:
         if "ID1" in feature_type:
             if feat_names_only:
@@ -98,10 +101,202 @@ def features_from_formula(formula,feature_types,elements_index,properties_for_st
                         feat_names.append(orb_prop+orb_prop_stat)
             else:
                 feat_list.extend(get_atomic_orbital_features(formula_dict,elements_index,atomic_properties,anion_elements))
+        # 2026-11-12: Dataset-specific descriptors share the native feature dispatch and ordering.
+        # 2026-11-13: Pass the configured anion list to every c10bt descriptor.
+        # GS These are not documented, I leave them there for now, but they were needed only for tests
+        # 2026-11-16: Fingerprints compose with every other requested feature style.
+        if feature_type == "fingerprint1":
+            values = fingerprint1(None if feat_names_only else formula, atomic_random,
+                                  (style_options or {}).get("fingerprint1"), feat_names_only)
+        elif feature_type == "c10bt_onehotcha":
+            values = c10bt_onehotcha(None if feat_names_only else formula_dict, anion_elements, feat_names_only)
+        elif feature_type == "c10bt_onehotcat":
+            values = c10bt_onehotcat(None if feat_names_only else formula_dict, anion_elements, feat_names_only)
+        elif feature_type == "c10bt_elprops":
+            values = c10bt_elprops(None if feat_names_only else formula_dict, elements_index,
+                (style_options or {}).get("c10bt_elprops", []), atomic_properties, anion_elements, feat_names_only)
+        elif feature_type == "c10bt_catdistr":
+            values = c10bt_catdistr(None if feat_names_only else formula_dict, anion_elements, feat_names_only)
+        # 2026-11-13: Full-composition counts use the same dispatch and configured chemical roles.
+        elif feature_type == "c10bt_fullcomp":
+            values = c10bt_fullcomp(None if feat_names_only else formula_dict, anion_elements, feat_names_only)
+        else:
+            continue
+        if feat_names_only:
+            feat_names.extend(values)
+        else:
+            feat_list.extend(values)
     if feat_names_only:
         return feat_names
     else:
         return feat_list
+
+# 2026-11-16: Require explicit dimensions/seed and validate before generating random matrices.
+def fingerprint1_options(options):
+    """Return validated N, M, S and distribution from the fingerprint1 option dictionary."""
+    if not isinstance(options, dict) or any(key not in options for key in ("N", "M", "S")):
+        raise ValueError("options_ML_styles['fingerprint1'] must provide N, M and S")
+    N, M, S = (options[key] for key in ("N", "M", "S"))
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (N, M)):
+        raise ValueError("fingerprint1 N and M must be positive integers")
+    if isinstance(S, bool) or not isinstance(S, int) or S < 0:
+        raise ValueError("fingerprint1 S must be a nonnegative integer seed")
+    distribution = options.get("distribution", "gaussian")
+    if distribution not in ("gaussian", "uniform", "rademacher", "sphere", "sparse"):
+        raise ValueError(f"Unknown fingerprint1 distribution: {distribution}")
+    return N, M, S, distribution
+
+
+# 2026-11-16: Reduce integer or approximately rational counts before selecting matrix rows.
+def _fingerprint1_integer_counts(formula_dict):
+    """Return coprime positive counts, accepting rounded rational stoichiometries.
+
+    Integer inputs are reduced exactly. Other inputs are normalized by their
+    largest count and approximated with denominators <=100, with absolute
+    tolerance 0.0005. Unrepresentable or nonpositive counts raise ValueError.
+    """
+    from fractions import Fraction
+    from math import gcd, lcm
+    counts = list(formula_dict.values())
+    if not counts or any(not np.isfinite(count) or count <= 0 for count in counts):
+        raise ValueError("fingerprint1 requires positive, finite atom counts")
+    if all(float(count).is_integer() for count in counts):
+        integers = [int(count) for count in counts]
+    else:
+        ratios = [float(count / max(counts)) for count in counts]
+        fractions = [Fraction(ratio).limit_denominator(100) for ratio in ratios]
+        if any(fraction <= 0 or abs(float(fraction) - ratio) > 0.0005
+               for fraction, ratio in zip(fractions, ratios)):
+            raise ValueError("fingerprint1 cannot convert stoichiometry to integer ratios "
+                             "within tolerance 0.0005 and denominator limit 100")
+        denominator = lcm(*(fraction.denominator for fraction in fractions))
+        integers = [fraction.numerator * (denominator // fraction.denominator) for fraction in fractions]
+    divisor = gcd(*integers)
+    return dict(zip(formula_dict, (count // divisor for count in integers)))
+
+
+# 2026-11-16: Sum one vector per element, indexed by its reduced count and capped at N.
+def fingerprint1(formula, atomic_random, options, feat_names_only=False):
+    """Return M random fingerprint features, or labels fp1_1 through fp1_M.
+
+    Parse decimals with pymatgen, reduce counts to integers, and sum row k-1
+    for each element with count k. Counts above N use row N-1 with a warning.
+    Matrices must have been generated once by Data4ML or restored from metadata.
+    """
+    import warnings
+    from pymatgen.core import Composition
+    N, M, _, _ = fingerprint1_options(options)
+    if feat_names_only:
+        return [f"fp1_{index + 1}" for index in range(M)]
+    counts = _fingerprint1_integer_counts(Composition(formula).get_el_amt_dict())
+    if atomic_random is None:
+        raise ValueError("fingerprint1 elemental matrices have not been generated")
+    features = np.zeros(M)
+    for element, count in sorted(counts.items()):
+        if count > N:
+            warnings.warn(f"fingerprint1: {formula}, {element} count {count} exceeds N={N}; using N",
+                          UserWarning, stacklevel=2)
+        matrix = atomic_random.get(element)
+        if matrix is None or len(matrix) != N or len(matrix[min(count, N) - 1]) != M:
+            raise ValueError(f"Missing or invalid fingerprint1 matrix for {element}")
+        features += np.asarray(matrix[min(count, N) - 1], dtype=float)
+    return features.tolist()
+
+
+# 2026-11-12: Fixed category order defines the c10bt feature columns and saved identities.
+C10BT_CHALCOGENS = ("S", "Se", "Te")
+C10BT_CATIONS = ("Cu", "Ag", "Zn", "Cd", "Ga", "In", "Sn", "Pb", "Sb", "Bi")
+
+
+# 2026-11-12: Validate the common domain before any c10bt values are calculated.
+# 2026-11-13: Infer chemical roles from anion_elements; fixed sets only validate this dataset.
+def _c10bt_split(formula_dict, anion_elements):
+    """Split using configured anions, then validate the c10bt element sets and stoichiometry."""
+    unsupported = set(formula_dict) - set(C10BT_CATIONS + C10BT_CHALCOGENS)
+    if unsupported:
+        raise ValueError("c10bt descriptors do not support: " + ", ".join(sorted(unsupported)))
+    if any(not np.isfinite(count) or count <= 0 for count in formula_dict.values()):
+        raise ValueError("c10bt descriptors require positive, finite atom counts")
+    configured_anions = set(anion_elements)
+    cations = {element: count for element, count in formula_dict.items() if element not in configured_anions}
+    anions = [element for element in formula_dict if element in configured_anions]
+    if not cations or len(anions) != 1:
+        raise ValueError("c10bt descriptors require at least one cation and exactly one of S, Se, Te")
+    if any(element not in C10BT_CATIONS for element in cations) or anions[0] not in C10BT_CHALCOGENS:
+        raise ValueError("anion_elements must classify the present S/Se/Te as the anion and the ten allowed metals as cations")
+    return cations, anions[0]
+
+
+# 2026-11-12: Encode the identity of the single chalcogen without atom-count weighting.
+# 2026-11-13: Use the supplied anion_elements for role assignment.
+def c10bt_onehotcha(formula_dict, anion_elements, feat_names_only=False):
+    """Return S/Se/Te presence flags, or their labels, in that fixed order."""
+    if feat_names_only:
+        return ["c10_cha_" + element for element in C10BT_CHALCOGENS]
+    _, anion = _c10bt_split(formula_dict, anion_elements)
+    return [int(element == anion) for element in C10BT_CHALCOGENS]
+
+
+# 2026-11-12: Multiple cations may be present, so the cation vector may contain several ones.
+# 2026-11-13: Use the supplied anion_elements for role assignment.
+def c10bt_onehotcat(formula_dict, anion_elements, feat_names_only=False):
+    """Return binary presence flags for Cu, Ag, Zn, Cd, Ga, In, Sn, Pb, Sb, Bi, or labels."""
+    if feat_names_only:
+        return ["c10_cat_" + element for element in C10BT_CATIONS]
+    cations, _ = _c10bt_split(formula_dict, anion_elements)
+    return [int(element in cations) for element in C10BT_CATIONS]
+
+
+# 2026-11-12: Use independently selected ID1-compatible elemental properties for c10bt.
+# 2026-11-13: Use the supplied anion_elements for the cation/anion property split.
+def c10bt_elprops(formula_dict, elem_index, props_list, atomic_props_df, anion_elements, feat_names_only=False):
+    """For each property return cation range and weighted cation mean minus anion value.
+
+    Options use the same property names/table as ID1. Each selected property must
+    have finite numeric values for every element present. A single cation has zero range.
+    """
+    if not props_list:
+        raise ValueError("Set options_ML_styles['c10bt_elprops'] to a nonempty property list")
+    if feat_names_only:
+        return [f"c10_{prop}_{quantity}" for prop in props_list for quantity in ("rng", "dCA")]
+    cations, anion = _c10bt_split(formula_dict, anion_elements)
+    n_cations = sum(cations.values())
+    features = []
+    for prop in props_list:
+        try:
+            values = {element: float(atomic_props_df.loc[elem_index[element], prop])
+                      for element in (*cations, anion)}
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"c10bt_elprops requires numeric '{prop}' for every element present") from error
+        if not all(np.isfinite(value) for value in values.values()):
+            raise ValueError(f"c10bt_elprops requires finite '{prop}' for every element present")
+        cation_values = [values[element] for element in cations]
+        mean_cation = sum(count * values[element] for element, count in cations.items()) / n_cations
+        features.extend([max(cation_values) - min(cation_values), mean_cation - values[anion]])
+    return features
+
+
+# 2026-11-12: Group fractions count cation atoms; the ratio counts anions per cation atom.
+# 2026-11-13: Use the supplied anion_elements for role assignment.
+def c10bt_catdistr(formula_dict, anion_elements, feat_names_only=False):
+    """Return cation fractions for groups 11-15 and the anion/cation atom ratio, or labels."""
+    if feat_names_only:
+        return [f"c10_frac_g{group}" for group in range(11, 16)] + ["c10_an_cat"]
+    cations, anion = _c10bt_split(formula_dict, anion_elements)
+    n_cations = sum(cations.values())
+    return [sum(cations.get(element, 0) for element in C10BT_CATIONS[index:index + 2]) / n_cations
+            for index in range(0, 10, 2)] + [formula_dict[anion] / n_cations]
+
+
+# 2026-11-13: Store raw atom counts for the ten cations followed by S, Se and Te.
+def c10bt_fullcomp(formula_dict, anion_elements, feat_names_only=False):
+    """Return 13 unnormalized element counts, or labels, in the fixed c10bt element order."""
+    elements = C10BT_CATIONS + C10BT_CHALCOGENS
+    if feat_names_only:
+        return ["c10_n_" + element for element in elements]
+    _c10bt_split(formula_dict, anion_elements)
+    return [formula_dict.get(element, 0) for element in elements]
+
 
 # 2026-10-14: Reuse saved elemental values and feature definitions when metadata is present.
 def get_formula_features_matminer(formulas,features_style,wpnorm=False,njobs=1,feat_names_only=False,snapshot=None):

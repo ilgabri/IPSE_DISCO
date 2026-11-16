@@ -22,6 +22,9 @@ utilities/not_shared/
 #datatsets...
 datasets
 
+#tests created by cx
+tests
+
 #  # Distribution / packaging
 #  
 #  build/

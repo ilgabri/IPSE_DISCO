@@ -29,6 +29,7 @@ class Data4ML:
     ----------
     initial data (pandas df): stores the data from which the ML features will be calculated (typically formula)
     atomic_properties (pandas df): stores the properties of elements, used e.g. to get features from formula
+    atomic_random (dict of numpy matrices): random numbers for each element, to build fingerprint
     features_options (dict): {style num./label : list of property names} keys are numbers/labels corresponding 
         to features types, values are listis of the names of properties of that style of features.
         It is passed to various functions of Featurizer.py, e.g. features_from_formula (through 
@@ -49,6 +50,9 @@ class Data4ML:
     def __init__(self,features_options=None):
         self.initial_data=None
         self.atomic_properties=None
+        self.atomic_random=None
+        # 2026-11-16: Track which settings generated or restored the fingerprint matrices.
+        self.atomic_random_settings=None
         self.features_options=copy.deepcopy(features_options)
         self.feature_labels=[]
         # 2026-10-14: Feature identities and saved elemental tables are separate from labels.
@@ -90,6 +94,87 @@ class Data4ML:
             if isinstance(data4feat_columns,str): data4feat_columns=[data4feat_columns]
             if data4feat: self.initial_data=df.filter(data4feat_columns,axis=1)
             if target: self.target=df[target_column].tolist()
+
+
+    # 2026-11-16: Bind the generator to Data4ML and retain its reproducibility settings.
+    def generate_element_vectors(self, N, M, S, distribution="gaussian"):
+        """
+        Generate reproducible random fingerprints for chemical elements.
+
+        Parameters
+        ----------
+        N : int
+            Maximum multiplicity of each element.
+        M : int
+            Length of each fingerprint vector.
+        S : int
+            Random seed.
+        distribution : str
+            One of: "gaussian", "uniform", "rademacher", "sphere", "sparse".
+
+        Stores
+        ------
+        atomic_random : dict
+            Keys: chemical element symbols. Values: N x M lists of floats.
+
+            vectors["Fe"][0] -> Fe appearing once
+            vectors["Fe"][1] -> Fe appearing twice
+            ...
+            vectors["Fe"][N-1] -> Fe appearing N times
+
+            Absent elements contribute a zero vector.
+        """
+
+        elements = """
+            H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar
+            K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr
+            Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe
+            Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu
+            Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn
+            Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr
+            Rf Db Sg Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og
+        """.split()
+
+        # 2026-11-16: Share validation with the descriptor and metadata definitions.
+        fingerprint1_options({"N": N, "M": M, "S": S, "distribution": distribution})
+
+        rng = np.random.default_rng(S)
+
+        def random_vectors(shape):
+            if distribution == "gaussian":
+                return rng.standard_normal(shape)
+
+            elif distribution == "uniform":
+                return rng.uniform(-np.sqrt(3), np.sqrt(3), shape)
+
+            elif distribution == "rademacher":
+                return rng.choice([-1.0, 1.0], size=shape)
+
+            elif distribution == "sphere":
+                r = rng.standard_normal(shape)
+                r /= np.linalg.norm(r, axis=1, keepdims=True)
+                return r * np.sqrt(shape[1])
+
+            elif distribution == "sparse":
+                p = 0.1
+                r = rng.choice(
+                    [-1.0, 0.0, 1.0],
+                    size=shape,
+                    p=[p / 2, 1 - p, p / 2]
+                )
+                return r / np.sqrt(p)
+
+            else:
+                raise ValueError(f"Unknown distribution: {distribution}")
+
+        self.atomic_random = {}
+        scale = np.sqrt(2 * M)
+
+        for element in elements:
+            r = random_vectors((N + 1, M))
+            self.atomic_random[element] = ((r[1:] - r[0]) / scale).tolist()
+        # 2026-11-16: Reuse these matrices until their generating settings change.
+        self.atomic_random_settings = (N, M, S, distribution)
 
     def get_atomic_data(self,properties_groups=[],excluded_elements=[],Z_max=100,runtime=False,export_props=False):
         """ Creates a pandas dataframe (self.atomic_properties) with atomic properties, to be 
@@ -166,15 +251,17 @@ class Data4ML:
                 self.atomic_properties = pd.read_csv(table)
             self.atomic_properties["oxistates"]=self.atomic_properties["oxistates"].apply(ast.literal_eval) #cause ox states are read as string
             #this is a patch for an inelegant solution for multiple props (IE only for now) adopted below (to be updated if atomic properties change)...
-            if "ID1" in self.features_options:
-                if 'en_allen' in self.features_options["ID1"]:
+            # 2026-11-12: Apply existing ID1 property aliases/patches to c10bt selections too.
+            for style in ("ID1", "c10bt_elprops"):
+                if style not in self.features_options:
+                    continue
+                if 'en_allen' in self.features_options[style]:
                     self.atomic_properties.loc[self.atomic_properties['element']=='La','en_allen']=1.0  #cgt suggested it from: Rahm Zeng Hoffmann JACS 2019
                     self.atomic_properties.loc[self.atomic_properties['element']=='Tl','en_allen']=1.789 #from wiki
-                if 'ionization_energy' in self.features_options["ID1"]:
-                    #print("there is IE") #GS tmp
-                    self.features_options["ID1"].remove('ionization_energy')
-                    self.features_options["ID1"].append('ionenergies1')
-                    self.features_options["ID1"].append('ionenergies2')
+                if 'ionization_energy' in self.features_options[style]:
+                    self.features_options[style].remove('ionization_energy')
+                    self.features_options[style].append('ionenergies1')
+                    self.features_options[style].append('ionenergies2')
         else:
             if not properties_groups: print("no properties requested in 'get_atomic_data'",file=sys.stderr)
             included_elements=[]
@@ -193,11 +280,16 @@ class Data4ML:
 
             if 1 in properties_groups: #properties from Mendeleev library
                 if "ID1" not in self.features_options:
-                    print("WARNING: no options given for properties group 1",file=sys.stderr)
+                    # 2026-11-12: c10bt may supply elemental properties without an ID1 selection.
+                    if not self.features_options.get("c10bt_elprops"):
+                        print("WARNING: no options given for properties group 1",file=sys.stderr)
                     self.features_options["ID1"]=[]
                 props_to_add=[]
                 props_to_remove=[]
-                for prop in self.features_options["ID1"]:
+                # 2026-11-12: Fetch the union of independently requested elemental properties.
+                requested_properties = list(dict.fromkeys(prop for style in ("ID1", "c10bt_elprops")
+                    for prop in self.features_options.get(style, [])))
+                for prop in requested_properties:
                     if prop in ['period','group.symbol']: #cause these options already handled few lines above
                         continue
                     if prop=="oxidation_states" or prop=="oxistates": continue #coz oxistates not needed in ID1
@@ -241,10 +333,12 @@ class Data4ML:
                         mendeleev_prop_to_df('nvalence',is_method=True)
                     else:
                         mendeleev_prop_to_df(prop)
-                for p in props_to_remove:
-                    self.features_options["ID1"].remove(p)
-                for p in props_to_add:
-                    self.features_options["ID1"].append(p)
+                # 2026-11-12: Expand ionization energies only in styles that requested them.
+                for style in ("ID1", "c10bt_elprops"):
+                    if any(prop in self.features_options.get(style, []) for prop in props_to_remove):
+                        for prop in props_to_remove:
+                            self.features_options[style].remove(prop)
+                        self.features_options[style].extend(props_to_add)
 
 
             if 2 in properties_groups:
@@ -298,6 +392,11 @@ class Data4ML:
         # 2026-10-14: Recalculation replaces labels/identities rather than appending old ones.
         self.feature_labels=[]
         self.feature_ids=[]
+        # 2026-11-16: Require fingerprint settings and generate once, including after option edits.
+        if "fingerprint1" in styles:
+            settings = fingerprint1_options((self.features_options or {}).get("fingerprint1"))
+            if self.atomic_random is None or self.atomic_random_settings != settings:
+                self.generate_element_vectors(*settings)
         if not styles: print("style not defined in calculate_formula_features",file=sys.stderr)
         for style in styles:
             if style not in self.features_options:
@@ -321,23 +420,26 @@ class Data4ML:
             oxidation_states=None
 
         features_all_types=[] #this collects all types of features, to be merged after into self.features
-        if any(label in styles for label in {"ID1","ID2","ID3","ID4"}): #if the user requested formula-based features implemented in IPSE 
+        # 2026-11-16: Include random fingerprints in serial and parallel native feature calculation.
+        if any(label in styles for label in {"ID1", "ID2", "ID3", "ID4", "c10bt_onehotcha",
+                "c10bt_onehotcat", "c10bt_elprops", "c10bt_catdistr", "c10bt_fullcomp", "fingerprint1"}):
             features_ID=[] #to be changed to np array
             if ncore==1:
                 for formula in formulas: 
                     #print(formula) #GS tmp
                     features_ID.append(features_from_formula(formula,styles,elements_index,properties_for_statistics,self.atomic_properties,
-                        anion_elements,oxidation_states,False,self.features_options))
+                        anion_elements,oxidation_states,False,self.features_options,self.atomic_random))
             else:
                 pool = mp.Pool(ncore) #= mp.Pool(mp.cpu_count())
                 features_ID = pool.starmap(features_from_formula,[(formula,styles,elements_index,properties_for_statistics,self.atomic_properties,
-                    anion_elements,oxidation_states,False,self.features_options) for formula in formulas],chunksize=10000)
+                    anion_elements,oxidation_states,False,self.features_options,self.atomic_random) for formula in formulas],chunksize=10000)
                 pool.close()
                 #self.features=features_parallel.copy() #consider appending so as to enable features combination from different styles
                 #del features_parallel
             features_all_types.append(features_ID)
             if get_also_labels: self.feature_labels.extend(features_from_formula("no formula, labels only",styles,elements_index,properties_for_statistics,
-                    self.atomic_properties,anion_elements,oxidation_states,feat_names_only=True,style_options=self.features_options))
+                    self.atomic_properties,anion_elements,oxidation_states,feat_names_only=True,style_options=self.features_options,
+                    atomic_random=self.atomic_random))
 
         # 2026-10-14: Saved elemental tables feed both feature values and label generation.
         # GS: i.e. added snapshot= to get_formula_features_matminer
